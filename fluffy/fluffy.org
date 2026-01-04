@@ -170,6 +170,7 @@ password_properties: 0x00000000
   #+end_src
   this is not installed and has other dependencies; and this is not something we do in any of
   the labs either so let's park it for now
+  NOTE: the newer go version has since been downloaded
 * psexec.py
   #+begin_src bat
   $ impacket-psexec FLUFFY/j.fleischman:'J0elTHEM4n1990!'@10.10.11.69
@@ -210,7 +211,7 @@ Password:
    #+begin_src bat
    $ sudo nmap -sC -sV -p- -T4 10.10.11.69
 
-PORT      STATE SERVICE       VERSION                                                                                                                                                                                                       
+PORT      STATE SERVICE       VERSION
 53/tcp    open  domain        Simple DNS Plus
 88/tcp    open  kerberos-sec  Microsoft Windows Kerberos (server time: 2025-10-11 12:53:00Z)
 139/tcp   open  netbios-ssn   Microsoft Windows netbios-ssn
