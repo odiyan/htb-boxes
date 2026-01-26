@@ -70,9 +70,9 @@ Finished
   entering the string =test=
   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2025-10-16_11-09.png @ 2025-10-16 11:10:45
   [[file:interact_with_the_application/2025-10-16_11-10-45_2025-10-16_11-09.png]]
-  +looks liks thie might be vulnerable to sql injection?+; ok probably not, this is just a static
-  error page that's returned when you click the =Search= button. the content of the error page
-  is just the above image
+  +looks liks thie might be vulnerable to sql injection?+; ok probably not, this is just a
+  static error page that's returned when you click the =Search= button. the content of the error
+  page is just the above image
 * IIS Tilde Enumeration
   grepping for =gobuster= brought up [[file:d:/code/htb/academy/modules/attacking-common-applications/IIS-Tilde-enumeration.org::*overview][this]] link; let's do tilde enumeration
   however, instead of =iis_shortname_scanner=, I decided to try the bitquark go application

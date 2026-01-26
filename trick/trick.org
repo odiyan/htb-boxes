@@ -617,7 +617,7 @@ which web application language does the web server support?
   #+begin_src bat
   $ sqlmap -u http://preprod-payroll.trick.htb/ajax.php?action=login --data="username=abc&password=abc" -p username --level 5 --risk 3 --technique=BEUS --batch
   #+end_src
-  an interesting note is they (and the exploit suggestion) says the vulnerable field is
+  an interesting note is they (and the exploit suggestion) say the vulnerable field is
   username, however, we were able to inject the password field.
   according to chatgpt, it also makes a difference that they supply actual data (=abc=) for the
   params whereas they are empty in our request and also specify the injectable field.

