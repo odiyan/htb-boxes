@@ -1,5 +1,5 @@
 =
-tags: #windows #active-directory #ad
+tags: #windows #active-directory #ad #dpapi #kerberos
 
 ==
 
