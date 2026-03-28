@@ -60,7 +60,7 @@ Target domain ............
    #+end_src
 * directory fuzzing
   #+begin_src bat
-  $ ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://10.10.11.166:80/FUZZ
+  $ ffuf -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://10.10.11.166:80/FUZZ
 
 assets
 css

@@ -83,7 +83,7 @@ SMB  AUTHORITY        [-] Error enumerating shares: STATUS_ACCESS_DENIED
   #+end_src
 * try smb as guest user
   #+begin_src 
-  $ nxc smb 10.129.229.56 -u 'guest' -p '' --shares                         
+  $ nxc smb 10.129.229.56 -u 'guest' -p '' --shares
 
 SMB  AUTHORITY        [*] Windows 10 / Server 2019 Build 17763 x64 (name:AUTHORITY) (domain:authority.htb) (signing:True) (SMBv1:None) (Null Auth:True)
 SMB  AUTHORITY        [+] authority.htb\guest: 
@@ -195,9 +195,11 @@ DevT3st@123
    use the admin password to log in to the application; downloaded some config xml but it
    doesn't look helpful.
 * OFFICIAL SOLUTION
-  ok, this involves some LDAP stuff we haven't really learned I guess. inside the
-  =edit configuration= option in the PWM application, we can see a button for editing the LDAP
-  connection; from the solution pdf:
+  +ok, this involves some LDAP stuff we haven't really learned I guess+. turns out there's a
+  section on this [[file:d:/code/htb/academy/modules/active-directory-enumeration/miscellaneous-misconfig.org::*Sniffing LDAP Credentials][here]] (Sniffing LDAP Credentials in the Miscellaneous Misconfig section of
+  AD enumeration)
+  inside the =edit configuration= option in the PWM application, we can see a button for editing
+  the LDAP connection; from the solution pdf:
   #+begin_src 
   Sometimes, it is possible to retrieve cleartext credentials by tricking the LDAP connection
   tester to connect to your own Netcat listener. Since it is using LDAPS, however, we will
