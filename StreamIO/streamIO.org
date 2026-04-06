@@ -201,6 +201,7 @@ f87d3c0d6c8fd686aacc6627f1f493a5:!!sabrina$
   we're able to login, but it's not obvious there exist other pages to view.
 * fuzz pages
 ** streamio.htb
+   NOTE: don't use =-s=
   #+begin_src 
   ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u https://streamio.htb/FUZZ.php
 
@@ -213,6 +214,7 @@ Register
   #+end_src
   doesn't discover anything new.
 ** watch.streamio.htb 
+   NOTE: don't use =-s=
    #+begin_src 
    $ ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u https://watch.streamio.htb/FUZZ.php
    

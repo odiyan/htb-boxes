@@ -112,6 +112,7 @@ ERROR~1.HTM          ERROR.HTM?          ERROR.HTML
 ** What's the relative path on the webserver on port 50000 to an open source automation server
    i suppose we should be running gobuster or ffuf
 ** ffuf
+   NOTE: don't use =-s=
   #+begin_src 
   $ ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://10.10.10.63:50000/FUZZ
 
