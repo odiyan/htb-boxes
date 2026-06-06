@@ -106,7 +106,7 @@ http://10.129.96.75/challenge.php?flag=php://filter/read=convert.base64-encode/r
   ffuf -w /usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt -u http://10.129.12.103/index.php -X POST -d "player=2414&FUZZ=1"
   #+end_src
 * vhost fuzzing
-  with gobuster:
+  with gobuster: IMPORTANT: this is not the right approach
   #+begin_src bat
   gobuster vhost -u http://10.129.96.75 -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt --append-domain
   #+end_src
