@@ -1,5 +1,5 @@
 ==
-tags: #windows #easy
+tags: #windows #easy #scf #file-upload
 =
 
 * nmap

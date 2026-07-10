@@ -42,7 +42,7 @@ assets
 error
    #+end_src
 * obtain an email by creating an issue on osticket
-  as mention one the [[file:d:/code/htb/academy/modules/attacking-common-applications/osticket.org::*Attacking osTicket][osticket module]], let's create a ticket and ge a temporary email id
+  as mentioned in the [[file:d:/code/htb/academy/modules/attacking-common-applications/osticket.org::*Attacking osTicket][osticket module]], let's create a ticket and ge a temporary email id
   #+DOWNLOADED: file:C%3A/Users/shyam/Desktop/2026-04-30_00-29.png @ 2026-04-30 00:29:29
 [[file:obtain_an_email_by_creating_an_issue_on_osticket/2026-04-30_00-29-29_2026-04-30_00-29.png]]
 * mattermost
