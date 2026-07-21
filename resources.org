@@ -1,0 +1,6 @@
+==
+tags: #resources #common
+=
+
+* precompiled binaries for stuff
+  https://github.com/jakobfriedl/precompiled-binaries/
