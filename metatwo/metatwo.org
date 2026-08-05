@@ -271,7 +271,7 @@ aa4cdee3f168c09a2f873bdcdfe6a020
 ** wpscan
    uses =aggressive= with =--detection-mode= and =--plugin-detection=
    #+begin_src bat
-   wpscan --url metapress.htb --detection-mode aggressive --plugin-detection aggressive
+   wpscan --url metapress.htb --detection-mode aggressive --plugins-detection aggressive
    #+end_src
    this takes a really long time to run because it checks against each of ~10k plugins.
 ** vulnerable plugin

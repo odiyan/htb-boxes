@@ -203,7 +203,7 @@ f87d3c0d6c8fd686aacc6627f1f493a5:!!sabrina$
 ** streamio.htb
    NOTE: don't use =-s=
   #+begin_src 
-  ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u https://streamio.htb/FUZZ.php
+  ffuf -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u https://streamio.htb/FUZZ.php
 
 Contact
 About
@@ -216,7 +216,7 @@ Register
 ** watch.streamio.htb 
    NOTE: don't use =-s=
    #+begin_src 
-   $ ffuf -s -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u https://watch.streamio.htb/FUZZ.php
+   $ ffuf -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u https://watch.streamio.htb/FUZZ.php
    
 search
 Search

