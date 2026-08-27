@@ -426,7 +426,7 @@ SMB  10.10.11.72  445  DC01  [+] tombwatcher.htb\Sam:NewStrongP@ssw0rd!
    additional pops up.
 * rusthound-ce
   #+begin_src 
-  rusthound-ce -u john -p 'JohnNewP@ss!' -d 'tombwatcher.htb' -c All
+  rusthound-ce -u john -p 'JohnNewP@ss!' -d 'tombwatcher.htb' -c All --zip
   #+end_src
   this reveals more info but not sure if it's more useful. what can we do with the =GenericAll=
   over *ADCS*?
